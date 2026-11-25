@@ -1,102 +1,178 @@
-# PERIHELION 3D simulator
+# PERIHELION: 3D Simulator
 
-Team Hyperhelix. A live simulation of the system on a model of the Gandhamardan-B mine.
+**Independent monitoring of mine extraction and movement**
+Team Hyperhelix
 
-## Open it
+An interactive 3D simulation of the PERIHELION system, set on a model of the Gandhamardan-B iron ore mine. It shows how a Governing Body can measure, check and record what leaves a mine without relying on the Vendor's own records.
 
-1. Double-click **PERIHELION-simulator.html**. Use Chrome or Edge.
-2. Wait a few seconds while the site is built.
-3. Press **F11** for full screen.
+## Features
 
-It is one file. It needs no internet and no installation.
+- A guided story in eight acts, from the first fly-over to the final verdict
+- Three views of the same events: **Vendor's paper**, **System's evidence** and **What actually happened**
+- Automated gates, buried weighing, timed checkpoints, LiDAR towers and drone counting rounds
+- Two-officer approval for actions beyond routine gate decisions
+- A tamper-evident log built on SHA-256 hashes
+- A "Be the Vendor" mode in which the audience chooses an attack
+- Runs offline in a web browser from a single HTML file
 
-## Before the demo (Asus TUF)
+## Getting started
 
-- Plug in the charger and set Windows power mode to **Best performance**.
-- Windows Settings > System > Display > Graphics: set Chrome (or Edge) to **High performance**, so it uses the dedicated graphics card.
-- The small number at the top left is the frame rate. 40 or more looks smooth.
-- If it is low, choose **Quality: Medium** or **Low**. On "auto" it steps down by itself.
-- Run the whole story once on the TUF and once on the ThinkPad. The frame rate has not been measured on either.
+### Prerequisites
+
+| Software | Needed for |
+|---|---|
+| Google Chrome or Microsoft Edge (current version, hardware acceleration on) | Running the simulator |
+| [Git](https://git-scm.com/downloads) | Cloning the repository |
+| [Node.js](https://nodejs.org/) 20 or later | Building from source only |
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/jithujj153/PerihelionSIM.git
+cd PerihelionSIM
+```
+
+If you do not use Git, choose **Code > Download ZIP** on the repository page and extract the archive. A private repository requires an account with access.
+
+### 2. Run the simulator
+
+No installation or build is needed. Open `PERIHELION-simulator.html` in Chrome or Edge:
+
+| System | Command |
+|---|---|
+| Windows (PowerShell) | `start .\PERIHELION-simulator.html` |
+| macOS | `open PERIHELION-simulator.html` |
+| Linux | `xdg-open PERIHELION-simulator.html` |
+
+You can also double-click the file. If it opens in another browser, right-click it and choose **Open with**.
+
+Wait a few seconds while the site is built, then press **F11** for full screen. To start the story again from the beginning, press **1** or reload the page.
+
+## Building from source
+
+This step is only needed if you change the code. The first command downloads the dependencies and requires an internet connection.
+
+```bash
+cd source
+npm install
+npm run build
+```
+
+The build writes `source/dist/PERIHELION-simulator.html`. Open that file to check your changes.
+
+| Command | Purpose |
+|---|---|
+| `npm run build` | Build the single-file simulator |
+| `npm test` | Run the attack checks and the drone round coverage test |
+| `npm run typecheck` | Check TypeScript types |
+
+To publish a new build, copy it to the repository root:
+
+```bash
+cp dist/PERIHELION-simulator.html ..
+```
+
+## Project structure
+
+```
+PerihelionSIM/
+├── PERIHELION-simulator.html   Ready-to-run simulator
+├── README.md
+└── source/
+    ├── src/
+    │   ├── engine/             Simulation, decision rules, drone scheduling, log
+    │   ├── view/               3D scene, terrain, models, cameras
+    │   ├── ui/                 Panels, story acts, styles
+    │   ├── index.html
+    │   └── main.ts
+    ├── test/                   Automated checks
+    ├── build.mjs               Bundler script
+    ├── make.mjs                Produces the single HTML file
+    └── package.json
+```
+
+Built with TypeScript, [Three.js](https://threejs.org) and esbuild. The decision rules receive only sensor readings and never the simulated truth.
 
 ## Controls
 
-| Key | What it does |
+| Input | Action |
 |---|---|
-| Space | Play or pause. Use it whenever you want to talk. |
-| Right / Left arrow | Next or previous act (works with most presentation clickers) |
-| 1 to 8 | Jump to an act |
-| A, then B | Officer A and Officer B approve |
-| I | Ignore the recommendation |
-| V | Switch view: Vendor's paper, System's evidence, What actually happened |
-| C | Change camera |
-| N | Sneak a truck in through the open boundary |
-| H | Hide the screens for a clean picture |
-| Drag, scroll | Fly the camera yourself. Pick "Auto director" to hand it back. |
-| Click | A truck, gate or pile |
+| `Space` | Play or pause |
+| `→` / `←` | Next or previous act (also Page Down / Page Up) |
+| `1` to `8` | Jump to an act |
+| `A`, then `B` | Officer A and Officer B approve a recommendation |
+| `I` | Ignore a recommendation |
+| `V` | Change view |
+| `C` | Change camera |
+| `N` | Send an unregistered truck through the open boundary |
+| `H` | Hide or show the panels |
+| `Esc` | Close a dialog |
+| Drag, scroll | Move the camera freely (choose **Auto director** to return) |
+| Click | Inspect a truck, gate or stockpile |
 
-**Pace** (top bar): *story* leaves room to talk, *quick* suits a shorter slot.
+**Pace** (top bar): *story* leaves time for narration; *quick* suits a shorter slot. The simulation pauses whenever a decision needs two officers.
 
-The simulation stops by itself when a decision needs two officers.
+## Presentation guide
 
-## Run sheet (12 minutes)
+### Twelve-minute run sheet
 
-| Time | Act | What happens | What you do | One line to say |
+| Time | Act | What happens | Presenter action | Key message |
 |---|---|---|---|---|
-| 0:00 | 1 Arrival | Fly-over, then the view turns to the Vendor's paper | Talk | "Today the only record belongs to the people being checked." |
-| 0:30 | 2 The net | Layers appear one by one | Talk | "None of these belongs to the Vendor." |
-| 1:45 | 3 Honest trip | Truck 1 enters, loads, leaves, is weighed at the destination | Pause at the first gate to explain the four checks | "An honest truck never waits for a person." |
-| 3:15 | 4 Three cheats | Swap stopped, short dispatch note caught, cloned plate refused, tower sees it | Press **A** then **B** to send the drone | "The AI advises. Two officers decide." |
-| 6:45 | 5 Open boundary | A truck drives in where there is no fence. A drone round counts one too many | Press **A** then **B** | "Round times are secret and different every hour." |
-| 8:15 | 6 The pile | Stockpile scan balances | Click **What if the officers had ignored the advice?** | "Ore taken without a record shows in the pile." |
-| 9:15 | 7 Be the Vendor | The panel picks an attack | Click the attack they name | "Try to cheat it." |
-| 11:00 | 8 Verdict | Six questions, evidence pack, cost, next step | Close | "Expert review, then a pilot on one gate." |
+| 0:00 | 1. Arrival | Fly-over, then the Vendor's paper view | Introduce the problem | Today the only record belongs to the party being checked. |
+| 0:30 | 2. The net | Monitoring layers appear one by one | Explain the layers | None of them belongs to the Vendor. |
+| 1:45 | 3. Honest trip | A truck enters, loads, leaves and is weighed at its destination | Pause at the first gate to explain the checks | An honest truck never waits for a person. |
+| 3:15 | 4. Three cheats | A truck swap, a short dispatch note and a cloned number plate are caught | Press `A`, then `B` | The AI advises; two officers decide. |
+| 6:45 | 5. Open boundary | A truck enters where there is no fence and a drone round counts one too many | Press `A`, then `B` | Round times are secret and change every hour. |
+| 8:15 | 6. The pile | The stockpile scan balances, then a replay shows the loss if advice is ignored | Click **What if the officers had ignored the advice?** | Ore taken without a record shows in the stockpile. |
+| 9:15 | 7. Be the Vendor | The panel chooses an attack | Run the chosen attack | Invite the panel to test the system. |
+| 11:00 | 8. Verdict | Six questions, evidence pack, cost and next step | Close the presentation | Expert review first, then a pilot on one gate. |
 
-The animation itself takes about 5 minutes at story pace, before act 7. The rest of the slot is your talking, pauses and the panel's turn.
+The animation takes about five minutes before act 7 at story pace. The remaining time is for narration, pauses and the panel.
 
 ### Five-minute version
 
-Act 1 (skip ahead after the paper view) > act 3 (pause once at the gate) > act 4 > act 6 with the "what if" replay > act 8. Choose **Pace: quick**.
+Choose **Pace: quick**. Show act 1 up to the paper view, then act 3, act 4, act 6 with the "what if" replay, and act 8.
 
-Acts 3 to 6 stop where the next one begins, so you can talk as long as you like and miss nothing.
+Acts 3 to 6 stop where the next act begins. If you skip ahead to act 6, 7 or 8 before deciding on the drone advice about the cloned truck, the advice counts as ignored and the stockpile shows missing ore. Decisions already made are kept.
 
-If you skip ahead to act 6, 7 or 8 before deciding on the drone advice about the cloned truck, it counts as ignored, so the pile shows missing ore. Decisions you have already made are kept.
+### Attacks for act 7
 
-## Act 7: good attacks for a live panel
-
-| Fast (a few seconds) | Slower (explain while it runs) |
+| Detected within seconds | Takes longer |
 |---|---|
 | Open the device box | Pick up ore on the road (about 15 s) |
 | Cut truck power | Move device to another truck (about 20 s) |
 | Enter twice | Never reach destination (about 1.5 min) |
 | Fake the position | Shave 1.2 t off every note (about 1.5 min) |
-| Fake device, jam the device, tower off | Sneak a truck in (about 2 min, waits for a drone round) |
+| Fake device, jam the device, tower off | Sneak a truck in (about 2 min, needs a drone round) |
 
-- "Device understates load" and "Leave loaded by G2" need a truck that has loaded and not yet left. The menu says so if pressed early.
-- **Quick run between counts** can escape. It is there on purpose to show the limit of random counting. In this simulation that truck takes no ore.
-- **Log tab:** "Quietly edit one entry", then "Check the log". Then try "Edit and rewrite the chain". Press **Undo the tampering** before act 8.
+- **Device understates load** and **Leave loaded by G2** need a truck that has loaded and has not yet left.
+- **Quick run between counts** can escape detection. It is included to show the limit of random counting. In this simulation that truck takes no ore.
+- In the **Log** tab, use **Quietly edit one entry**, then **Check the log**. Repeat with **Edit and rewrite the chain**. Select **Undo the tampering** before act 8.
 
-## What is real and what is assumed
+## Troubleshooting
 
-Say this openly if asked.
+| Problem | What to do |
+|---|---|
+| "The 3D view could not start" | Use a current Chrome or Edge and switch on hardware acceleration in the browser settings. |
+| Movement is not smooth | Connect the charger, use the best-performance power mode, assign the browser to the high-performance graphics processor if there is one, or set **Quality** to Medium or Low. The frame rate is shown at the top left. |
+| PowerShell blocks `npm` | Use `npm.cmd` in place of `npm`. |
+| `git clone` is refused | Sign in with a GitHub account that has access to the repository. |
 
-- **Sourced:** quarry and dump footprints and levels, lease area and area in use (IBM inspection report, June 2024). Costs and pilot plan are the deck's estimates.
-- **Assumed:** gate, road, tower and zone positions; sensor noise; radio range; drone camera width and flight time; permit limits (250 t, 15 trips, 26 vehicles, 480 minutes).
-- **Drawn for visibility:** trucks and gates about twice life size; the change in pile shape is exaggerated; time runs faster than real time.
-- **Simplified:** the "AI" is a set of readable rules, shown under "why". The device signs with a shared key (HMAC-SHA256); a real device would use a public-key signature in a secure chip. A vehicle followed by a drone is assumed to leave.
-- **Drone rounds:** exactly two per hour. A truck that a gate, checkpoint, buried pad or tower confirmed during the round counts as accounted for. A "fewer than the log" alert is raised only if a missing truck's device is silent or it is missed twice.
-- **Not shown yet:** haul trucks, the quarry drone survey, radar as a delayed check, night view.
+## Assumptions and limitations
 
-## Source (for changes)
+| Area | Status |
+|---|---|
+| Quarry and dump footprints and levels, lease area and area in use | Taken from the IBM inspection report, June 2024 |
+| Costs and pilot plan | Estimates from the project proposal |
+| Gate, road, tower and zone positions; sensor noise; radio range; drone camera width and flight time; radar delay | Assumed |
+| Permit limits | Demonstration values: 250 t, 15 trips, 26 vehicles, 480 minutes |
+| Scale | Trucks and gates are about twice life size, pile shape changes are exaggerated and time runs faster than real time |
+| Control-room AI | A set of readable rules, each shown under "why" |
+| Device signature | Shared key (HMAC-SHA256). A real device would use a public-key signature in a secure chip. |
+| Drone follow | A followed vehicle is assumed to leave |
+| Drone rounds | Exactly two per hour. A truck confirmed by a fixed sensor during a round counts as accounted for. A "fewer than the log" alert needs a silent device or two misses. |
+| Not yet included | Haul trucks, quarry drone survey, radar as a delayed check, night view |
 
-The `source` folder holds the code. It needs Node.js 20 or later and, once, internet access:
+## Acknowledgements
 
-```
-cd source
-npm install
-npm run build
-npm test
-```
-
-The new file appears at `source/dist/PERIHELION-simulator.html`.
-
-Includes three.js (MIT licence).
+Includes [Three.js](https://threejs.org) (MIT licence).
