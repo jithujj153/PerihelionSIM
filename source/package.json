@@ -1,0 +1,11 @@
+{
+  "name": "perihelion-sim",
+  "private": true,
+  "scripts": {
+    "build": "node make.mjs",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node build.mjs test/attacks.ts dist/attacks.cjs && node dist/attacks.cjs && node build.mjs test/cover.ts dist/cover.cjs && node dist/cover.cjs"
+  },
+  "dependencies": { "three": "0.187.0" },
+  "devDependencies": { "@types/three": "0.187.0", "esbuild-wasm": "0.28.2", "typescript": "^6.0.3" }
+}
