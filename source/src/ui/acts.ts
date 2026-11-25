@@ -24,7 +24,12 @@ const atGate = (a: App, uid: string) => { const x = a.sim.find(uid); return !!x 
 const followDrone = (a: App) => {
   if (!a.sim.drones[4].active) return false;
   const uid = a.sim.follow?.uid;
-  shot(a, uid && a.world.vehiclePos(uid) ? { k: 'chase', uid, far: 2.1 } : { k: 'drone', id: 'F' }); return true;
+  // never lose the swarm: lift-off, flight out, circling what it found, flight home, landing
+  const el = a.sim.follow ? a.sim.t - a.sim.follow.t0 : 0;
+  if (el < 0.3 || el >= 4.35) shot(a, { k: 'preset', name: 'dock' });
+  else if (el >= 0.82 && el < 3.6 && uid && a.world.vehiclePos(uid)) shot(a, { k: 'chase', uid, far: 3.3 });
+  else shot(a, { k: 'swarm' });
+  return true;
 };
 
 const NET: [string, string, string, Shot][] = [
@@ -33,7 +38,8 @@ const NET: [string, string, string, Shot][] = [
   ['pads', 'Weighing buried in the road', 'At every gate and at hidden spots. The Vendor cannot see or reach them. Shown here as an x-ray.', { k: 'preset', name: 'road' }],
   ['checks', 'Timed checkpoints', 'A short-range radio check: is the truck where its device says, and on time?', { k: 'preset', name: 'checks' }],
   ['towers', 'LiDAR towers over the stockpiles', 'They see any vehicle that no device answers for, and measure the piles.', { k: 'preset', name: 'towers' }],
-  ['zones', 'Four drone zones for the open boundary', 'Two counting rounds every hour at secret times. Count inside must equal entries minus exits.', { k: 'preset', name: 'zones' }],
+  ['zones', 'Four drone zones for the open boundary', 'Two counting rounds every hour, at secret times and on a new route each time. Count inside must equal entries minus exits.', { k: 'preset', name: 'zones' }],
+  ['zones', 'Drone charging station', 'Four drones patrol the zones. Four more wait charged as a reserve swarm for high-alert investigations.', { k: 'preset', name: 'dock' }],
 ];
 
 export const ACTS: Act[] = [
@@ -43,12 +49,13 @@ export const ACTS: Act[] = [
       if (s > 14) a.once('paper', () => { a.setView('paper'); a.say('info', 'What the Governing Body sees today', 'The Vendor’s paper: its own weighbridge slips, its own cameras, its own register. On paper, everything is in order.', 14); }); },
     speed: () => 0.25 },
   { id: 2, name: 'The net', minutes: '0:30', start: 0, view: 'evidence', learns: 'Independent layers watch the ore and the trucks that carry it. None of them belongs to the Vendor.',
-    enter(a) { a.setLayers({ fence: false, gates: false, pads: false, checks: false, towers: false, zones: false, boundary: true }); },
+    enter(a) { a.setLayers({ fence: false, gates: true, pads: false, checks: false, towers: false, zones: false, boundary: true }); },
     tick(a, s) {
-      const i = Math.min(NET.length - 1, Math.floor(s / 7));
+      // the first stop is short so the gates come early; every later stop lasts seven seconds
+      const i = s < 4 ? 0 : Math.min(NET.length - 1, 1 + Math.floor((s - 4) / 7)), end = 4 + (NET.length - 1) * 7 + 2;
       for (let k = 0; k <= i; k++) a.once('net' + k, () => { a.setLayers({ [NET[k][0]]: true }); a.clearBanners(); a.say('info', NET[k][1], NET[k][2], 7.5); });
-      shot(a, s > NET.length * 7 + 2 ? { k: 'preset', name: 'site' } : NET[i][3]);
-      if (s > NET.length * 7 + 2) a.once('all', () => { a.setLayers({ zones: false }); a.say('info', 'One control room, one tamper-evident log', 'AI runs the routine gates. Two officers approve anything bigger. Whatever is not acted on is recorded too.', 10); });
+      shot(a, s > end ? { k: 'preset', name: 'site' } : NET[i][3]);
+      if (s > end) a.once('all', () => { a.setLayers({ zones: false }); a.say('info', 'One control room, one tamper-evident log', 'AI runs the routine gates. Two officers approve anything bigger. Whatever is not acted on is recorded too.', 10); });
     },
     speed: () => 0 },
   { id: 3, name: 'Honest trip', minutes: '1:45', start: 1.0, view: 'evidence', learns: 'A genuine truck passes without waiting for anyone, and every independent weight agrees.',
@@ -79,13 +86,23 @@ export const ACTS: Act[] = [
     tick(a) {
       const g = a.sim.gov, flying = !!a.sim.flight && !a.sim.flight.done, found = g.rounds.some((r) => r.verdict === 'more' && r.t > 55);
       if (followDrone(a)) return;
-      if (flying) { a.once('fly' + a.sim.flight!.round.id, () => { a.setView('evidence'); a.say('info', 'Counting round in the air', `One drone to each zone. The gate log says ${a.sim.flight!.atStart.length} trucks should be inside.`, 7); }); shot(a, { k: 'preset', name: found ? 'west' : 'zones' }); return; }
+      // once the advice is settled, close the case instead of waiting in silence for the next round
+      if (found && !flying && !g.proposals.some((p) => p.kind === 'follow' && p.state === 'pending')) {
+        a.once('closed', () => {
+          a.caseClosed = true; a.clearBanners();
+          const acted = g.proposals.some((p) => p.kind === 'follow' && p.state === 'approved' && p.t > 55);
+          a.say(acted ? 'ok' : 'warn', acted ? 'Case closed: evidence saved' : 'Advice not acted on: recorded',
+            acted ? 'The vehicle with no device was photographed, it left the lease, and the swarm is back on charge. Press \u2192 to check the stockpile.' : 'The decision is in the log. Press \u2192 to see what the stockpile shows.', 600);
+        });
+        shot(a, { k: 'preset', name: a.sim.drones[4].active ? 'dock' : 'site' }); return;
+      }
+      if (flying) { a.once('fly' + a.sim.flight!.round.id, () => { a.setView('evidence'); a.say('info', 'Counting round in the air', `One drone to each zone, on a new random route. The gate log says ${a.sim.flight!.atStart.length} trucks should be inside.`, 7); }); shot(a, { k: 'preset', name: found ? 'west' : a.sim.t - a.sim.flight!.t0 < 0.4 ? 'dock' : 'zones' }); return; }
       if (found) { shot(a, { k: 'preset', name: 'west' }); return; }
       const x = a.sim.find('T5');
       if (x && x.state === 'driving') follow(a, 'T5'); else shot(a, { k: 'preset', name: 'west' });
       if (x && x.state !== 'driving' && a.sim.t > 61) a.once('wait', () => a.say('info', 'The next round time is secret', 'Time runs faster while we wait. The Vendor cannot know when the drones will fly.', 8));
     },
-    speed: (a) => { if (a.sim.drones[4].active) return 0.35; if (a.sim.flight && !a.sim.flight.done) return 0.7; if (a.sim.gov.rounds.some((r) => r.verdict === 'more' && r.t > 55)) return 0.4; return a.sim.find('T5')?.state === 'driving' ? 0.45 : 1.6; } },
+    speed: (a) => { if (a.caseClosed) return 0; if (a.sim.drones[4].active) return 0.35; if (a.sim.flight && !a.sim.flight.done) return 0.7; if (a.sim.gov.rounds.some((r) => r.verdict === 'more' && r.t > 55)) return 0.4; return a.sim.find('T5')?.state === 'driving' ? 0.45 : 1.6; } },
   { id: 6, name: 'The pile does not lie', minutes: '8:15', start: 93.5, view: 'evidence', learns: 'Even if every other check is ignored, ore taken without a record shows up in the stockpile scan.',
     enter(a) { a.say('info', 'Compare the pile with the books', 'No new ore was added in this window, so opening scan minus recorded loads must equal what is there now.', 9); },
     tick(a) {

@@ -1,7 +1,8 @@
 /* The ground: report-based quarry levels, haul roads, forest. y = elevation - 960 m. */
 import * as THREE from 'three';
-import { DUMPS, LEASE, NODES, PICKUP_ZONE, QUARRIES, ROADS, TRACKS, PILES, DOCK, CONTROL_ROOM, PLANT } from '../engine/layout';
+import { DUMPS, LEASE, NODES, PICKUP_ZONE, QUARRIES, ROADS, TRACKS, DOCK, CONTROL_ROOM, PLANT } from '../engine/layout';
 import { dist, inPoly, Rng, Vec } from '../engine/util';
+import { groundDetail } from './surface';
 
 export const X0 = -2700, X1 = 3200, Z0 = -3300, Z1 = 2600;
 const clamp = (a: number, lo = 0, hi = 1) => Math.min(hi, Math.max(lo, a));
@@ -91,7 +92,7 @@ function init() {
 init();
 
 const C = (n: number) => new THREE.Color(n);
-const COL = { forest: C(0x38582a), forest2: C(0x536f34), scrub: C(0x7d7a45), soil: C(0xa25a3a), soil2: C(0x8a4a33), ore: C(0x74352a), ore2: C(0x4f2a26), rock: C(0x6a5248), dump: C(0x8c6a4c), road: C(0xb98a67), yard: C(0x96634f), track: C(0x96744f) };
+const COL = { forest: C(0x33522a), forest2: C(0x567236), scrub: C(0x7d7a45), soil: C(0xa25a3a), soil2: C(0x8a4a33), ore: C(0x74352a), ore2: C(0x4f2a26), rock: C(0x6a5248), dump: C(0x8c6a4c), road: C(0xb98a67), yard: C(0x96634f), track: C(0x96744f) };
 
 export function disturbed(x: number, z: number): number {
   let m = 0;
@@ -171,20 +172,32 @@ export function ribbon(path: Vec[], width: number, lift: number, mat: THREE.Mate
 }
 
 function roadTexture() {
-  const c = document.createElement('canvas'); c.width = 128; c.height = 128;
+  const N = 512, c = document.createElement('canvas'); c.width = N; c.height = N;
   const g = c.getContext('2d')!, r = new Rng(5);
-  g.fillStyle = '#a97a5c'; g.fillRect(0, 0, 128, 128);
-  for (let i = 0; i < 1500; i++) { g.fillStyle = r.next() < 0.5 ? 'rgba(70,40,28,.22)' : 'rgba(230,190,150,.16)'; g.fillRect(r.next() * 128, r.next() * 128, 1 + r.next() * 3, 1 + r.next() * 3); }
-  g.fillStyle = 'rgba(70,42,30,.35)'; for (const x of [28, 44, 80, 96]) g.fillRect(x, 0, 7, 128);
-  const e = g.createLinearGradient(0, 0, 128, 0); e.addColorStop(0, 'rgba(120,90,55,.9)'); e.addColorStop(0.12, 'rgba(120,90,55,0)'); e.addColorStop(0.88, 'rgba(120,90,55,0)'); e.addColorStop(1, 'rgba(120,90,55,.9)'); g.fillStyle = e; g.fillRect(0, 0, 128, 128);
-  const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8;
+  g.fillStyle = '#a5765a'; g.fillRect(0, 0, N, N);
+  // every mark is drawn again one tile up or down, so the road repeats without a seam
+  const wrapped = (draw: (dy: number) => void) => { for (const dy of [-N, 0, N]) draw(dy); };
+  for (let i = 0; i < 70; i++) { const x = r.next() * N, y = r.next() * N, w = 30 + r.next() * 90; wrapped((dy) => { const p = g.createRadialGradient(x, y + dy, 0, x, y + dy, w); p.addColorStop(0, r.next() < 0.5 ? 'rgba(92,52,34,.22)' : 'rgba(214,170,128,.2)'); p.addColorStop(1, 'rgba(160,110,80,0)'); g.fillStyle = p; g.fillRect(x - w, y + dy - w, 2 * w, 2 * w); }); }
+  // two wheel tracks each way, with tread marks pressed into them
+  for (const x of [118, 182, 330, 394]) {
+    g.fillStyle = 'rgba(66,38,26,.34)'; g.fillRect(x - 17, 0, 34, N);
+    g.fillStyle = 'rgba(222,176,132,.22)'; g.fillRect(x - 23, 0, 5, N); g.fillRect(x + 18, 0, 5, N);
+    g.strokeStyle = 'rgba(48,26,18,.3)'; g.lineWidth = 5;
+    for (let y = 0; y < N; y += 16) { g.beginPath(); g.moveTo(x - 13, y); g.lineTo(x, y + 7); g.lineTo(x + 13, y); g.stroke(); }
+  }
+  for (let i = 0; i < 6500; i++) {
+    const x = r.next() * N, y = r.next() * N, s = r.next() < 0.97 ? 1 + r.next() * 3 : 4 + r.next() * 5;
+    wrapped((dy) => { g.fillStyle = 'rgba(40,20,12,.3)'; g.fillRect(x + 1, y + dy + 1.5, s, s * 0.7); g.fillStyle = r.next() < 0.45 ? 'rgba(112,72,52,.65)' : 'rgba(224,188,150,.5)'; g.fillRect(x, y + dy, s, s * 0.7); });
+  }
+  const e = g.createLinearGradient(0, 0, N, 0); e.addColorStop(0, 'rgba(116,88,52,1)'); e.addColorStop(0.13, 'rgba(116,88,52,0)'); e.addColorStop(0.87, 'rgba(116,88,52,0)'); e.addColorStop(1, 'rgba(116,88,52,1)'); g.fillStyle = e; g.fillRect(0, 0, N, N);
+  const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 16;
   return t;
 }
 
 export function buildTerrain() {
   const group = new THREE.Group();
-  const mat = new THREE.MeshLambertMaterial({ vertexColors: true });
-  const S = 15;
+  const mat = groundDetail(new THREE.MeshLambertMaterial({ vertexColors: true }), 1);
+  const S = 12;
   const snap = (a: number, o: number) => o + Math.round((a - o) / S) * S;
   const fine = QUARRIES.map((q) => ({ x0: snap(q.x0 - 60, X0), x1: snap(q.x1 + 60, X0), z0: snap(q.z0 - 60, Z0), z1: snap(q.z1 + 60, Z0) }));
   const x1 = snap(X1, X0), z1 = snap(Z1, Z0);
@@ -193,55 +206,13 @@ export function buildTerrain() {
   for (let x = X0; x < x1; x += T) for (let z = Z0; z < z1; z += T) { const m = patch(x, Math.min(x1, x + T), z, Math.min(z1, z + T), S, inFine, mat); if (m) group.add(m); }
   for (const b of fine) group.add(patch(b.x0, b.x1, b.z0, b.z1, 5, null, mat)!);
   // distant ground so the horizon is never empty
-  const far = new THREE.Mesh(new THREE.PlaneGeometry(40000, 40000), new THREE.MeshLambertMaterial({ color: 0x3d5a30 }));
+  const far = new THREE.Mesh(new THREE.PlaneGeometry(40000, 40000), groundDetail(new THREE.MeshLambertMaterial({ color: 0x3d5a30 }), 0.6));
   far.rotation.x = -Math.PI / 2; far.position.y = -110; group.add(far);
-  const roadMat = new THREE.MeshLambertMaterial({ map: roadTexture(), polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 });
+  const roadMat = groundDetail(new THREE.MeshLambertMaterial({ map: roadTexture(), polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 }), 0.25, 0.5);
   for (const r of ROADS) group.add(ribbon(r, 17, 0.35, roadMat));
   const trackMat = new THREE.MeshLambertMaterial({ color: 0x8f6a48, transparent: true, opacity: 0.8, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 });
   for (const r of TRACKS) group.add(ribbon(r, 7, 0.3, trackMat));
   return group;
 }
 
-/** Instanced forest. Count follows the quality setting. */
-export function buildTrees(max: number) {
-  const r = new Rng(99), spots: { x: number; z: number; s: number; kind: number; tint: number }[] = [];
-  const clear = (x: number, z: number) => {
-    if (disturbed(x, z) > 0.15) return false;
-    const road = roadInfo(x, z); if (road.d < road.w + 15) return false;
-    for (const p of PILES) if (Math.hypot(x - p.pos.x, z - p.pos.z) < p.radius + 30) return false;
-    return true;
-  };
-  let guard = 0;
-  while (spots.length < max && guard++ < max * 6) {
-    // denser where the cameras go
-    const near = r.next() < 0.62;
-    const x = near ? r.range(-1850, 2500) : r.range(X0, X1), z = near ? r.range(-1500, 2000) : r.range(Z0, Z1);
-    if (noise(x / 140 + 2, z / 140) < 0.3 || !clear(x, z)) continue;
-    spots.push({ x, z, s: r.range(0.55, 1.12), kind: r.next() < 0.7 ? 0 : 1, tint: r.next() });
-  }
-  const group = new THREE.Group();
-  const crownA = new THREE.IcosahedronGeometry(5.2, 0); crownA.scale(1, 1.15, 1); crownA.translate(0, 7.4, 0);
-  const crownB = new THREE.ConeGeometry(3.8, 12, 6); crownB.translate(0, 8.4, 0);
-  const trunk = new THREE.CylinderGeometry(0.5, 0.8, 4.4, 5); trunk.translate(0, 2.2, 0);
-  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), c = new THREE.Color(), up = new THREE.Vector3(0, 1, 0);
-  const leaf = new THREE.MeshLambertMaterial({ flatShading: true }), bark = new THREE.MeshLambertMaterial({ color: 0x5a4030 });
-  const cells = new Map<string, typeof spots>();
-  for (const s of spots) { const k = `${Math.floor(s.x / 1200)},${Math.floor(s.z / 1200)}`; const list = cells.get(k); if (list) list.push(s); else cells.set(k, [s]); }
-  for (const list of cells.values()) {
-    const crowns = [crownA, crownB].map((g, k) => new THREE.InstancedMesh(g, leaf, Math.max(1, list.filter((s) => s.kind === k).length)));
-    const trunks = new THREE.InstancedMesh(trunk, bark, list.length);
-    const idx = [0, 0];
-    list.forEach((s, i) => {
-      const y = height(s.x, s.z) - 0.6;
-      q.setFromAxisAngle(up, s.tint * 6.28);
-      m.compose(new THREE.Vector3(s.x, y, s.z), q, new THREE.Vector3(s.s, s.s * (0.85 + s.tint * 0.4), s.s));
-      trunks.setMatrixAt(i, m);
-      c.setHSL(0.24 + s.tint * 0.09, 0.42 + s.tint * 0.12, 0.2 + s.tint * 0.12);
-      crowns[s.kind].setMatrixAt(idx[s.kind], m); crowns[s.kind].setColorAt(idx[s.kind]++, c);
-    });
-    crowns.forEach((x, k) => { if (!idx[k]) return; x.castShadow = true; x.computeBoundingSphere(); group.add(x); });
-    trunks.computeBoundingSphere(); group.add(trunks);
-  }
-  return group;
-}
 export { LEASE };

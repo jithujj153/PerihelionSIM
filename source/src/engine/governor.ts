@@ -415,7 +415,7 @@ export class Governor {
     const subject = `Unknown (${s.plate ?? 'plate not read'})`;
     // do not repeat a request that is still open, or one just made for the same spot
     if (this.proposals.some((p) => p.kind === 'follow' && (p.state === 'pending' || (this.t - p.t < 8 && p.pos && dist(p.pos, s.pos) < 450)))) return;
-    this.propose({ kind: 'follow', origin: 'AI', text: 'Send a drone to follow and photograph the vehicle with no device', subject, pos: s.pos, why });
+    this.propose({ kind: 'follow', origin: 'AI', text: 'Launch the drone swarm to follow and photograph the vehicle with no device', subject, pos: s.pos, why });
   }
   onTower(tower: string, s: T.Sighting) {
     this.spotted(s.pos, `tower ${tower}`);
@@ -429,7 +429,7 @@ export class Governor {
   }
   onTowerTrack(tower: string, pos: Vec) { this.spotted(pos, `tower ${tower}`); }
   onFollow(s: T.Sighting | null, p: T.Proposal) {
-    if (!s) { this.record('AI', 'RECORD', 'Follow drone arrived and found no vehicle. It had already left.', p.subject); return; }
+    if (!s) { this.record('AI', 'RECORD', 'The drone swarm arrived and found no vehicle. It had already left.', p.subject); return; }
     this.spotted(s.pos, 'follow drone', s.plate);
     this.note('Follow drone', '', p.subject, 'Photograph and plate', `${s.plate ?? 'plate hidden'}, ${f1(s.shape)} m, no device`, 'bad');
     const twin = [...this.registry.values()].find((x) => x.plate === s.plate);

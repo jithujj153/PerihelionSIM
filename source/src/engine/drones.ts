@@ -1,5 +1,5 @@
-import { along, dist, pathLength, Rng, v, Vec } from './util';
-import { DOCK, SWEEPS, ZONE_IDS, zoneOf, ZoneId } from './layout';
+import { along, dist, inPoly, pathLength, Rng, v, Vec } from './util';
+import { DOCK, LEASE, SWEEPS, ZONE_IDS, zoneOf, ZoneId } from './layout';
 
 export const SWEEP_MIN = 5, TRANSIT_MIN = 0.5, ROUND_MIN = SWEEP_MIN + 2 * TRANSIT_MIN;
 export const SWATH_RADIUS = 115; // metres either side of the drone (assumed camera swath)
@@ -80,17 +80,72 @@ export class RoundScheduler {
 export interface Drone { id: ZoneId | 'F'; pos: Vec; alt: number; active: boolean; heading: number; scanning: boolean }
 export interface ZoneFlight { zone: ZoneId; path: Vec[]; length: number }
 
+/**
+ * A new route for every round. Each zone's coverage loop (every place a truck can drive) is cut into
+ * pieces that are flown in a random order and direction, with a wandering offset well inside the camera
+ * swath and a detour over open ground when there is time. The route cannot be predicted, nothing
+ * drivable is skipped, and a length budget keeps the drone's speed close to that of one plain loop.
+ */
 export function planSweep(rng: Rng, spot: Vec | null): ZoneFlight[] {
   return ZONE_IDS.map((zone) => {
-    // densify the closed loop, then rotate it so that each round starts elsewhere and may run backwards
-    const loop = SWEEPS[zone], L = pathLength(loop), n = Math.ceil(L / 40);
-    let pts = Array.from({ length: n }, (_, i) => along(loop, (L * i) / n).pos);
-    if (rng.next() < 0.5) pts = pts.reverse();
-    let k = rng.int(n);
-    if (spot && zoneOf(spot) === zone) k = pts.reduce((best, p, i) => (dist(p, spot) < dist(pts[best], spot) ? i : best), 0);
-    const path = [...pts.slice(k), ...pts.slice(0, k), pts[k]];
-    return { zone, path, length: pathLength(path) };
+    const L = pathLength(SWEEPS[zone]), budget = L * ROUTE_BUDGET;
+    let best: ZoneFlight | null = null;
+    // draw routes until one fits the budget; otherwise fly the shortest drawn
+    for (let attempt = 0; attempt < 60; attempt++) {
+      const path = drawRoute(rng, zone, spot), length = pathLength(path);
+      if (!best || length < best.length) best = { zone, path, length };
+      if (length <= budget) break;
+    }
+    return best!;
   });
+}
+export const ROUTE_BUDGET = 1.3;
+function drawRoute(rng: Rng, zone: ZoneId, spot: Vec | null): Vec[] {
+  const loop = SWEEPS[zone], L = pathLength(loop), n = Math.ceil(L / 40);
+  const base = Array.from({ length: n }, (_, i) => along(loop, (L * i) / n).pos);
+  // cut the loop at random places
+  const count = 3 + rng.int(2), first = rng.int(n), cuts = [0];
+  for (let k = 1; k < count; k++) cuts.push(Math.round(((k + rng.noise(0.3)) * n) / count));
+  cuts.push(n);
+  const left = cuts.slice(1).map((end, k) => Array.from({ length: end - cuts[k] + 1 }, (_, i) => base[(first + cuts[k] + i) % n]));
+  const pieces: Vec[][] = [];
+  // start with the alerted spot's piece, or any piece
+  if (spot && zoneOf(spot) === zone) {
+    let pi = 0, at = 0, bd = Infinity;
+    left.forEach((p, i) => p.forEach((q, k) => { const d = dist(q, spot); if (d < bd) { bd = d; pi = i; at = k; } }));
+    const [p] = left.splice(pi, 1);
+    pieces.push(p.slice(at), p.slice(0, at + 1).reverse());
+  } else {
+    const [p] = left.splice(rng.int(left.length), 1);
+    pieces.push(rng.next() < 0.5 ? p.reverse() : p);
+  }
+  // then hop to one of the two nearest unflown ends
+  while (left.length) {
+    const from = pieces[pieces.length - 1], here = from[from.length - 1];
+    const ends = left.flatMap((p, i) => [{ i, flip: false, d: dist(here, p[0]) }, { i, flip: true, d: dist(here, p[p.length - 1]) }]).sort((x, y) => x.d - y.d);
+    const pick = ends[rng.int(Math.min(2, ends.length))], [p] = left.splice(pick.i, 1);
+    pieces.push(pick.flip ? p.reverse() : p);
+  }
+  const path: Vec[] = [], detourAfter = rng.int(pieces.length);
+  pieces.forEach((p, i) => {
+    // weave from side to side, never far enough to lose sight of the road below
+    const amp = rng.range(25, 55) * (rng.next() < 0.5 ? -1 : 1), waves = rng.range(1, 2.5), m = p.length - 1;
+    p.forEach((q, k) => {
+      const a = p[Math.max(0, k - 1)], b = p[Math.min(m, k + 1)], d = dist(a, b) || 1, off = m ? amp * Math.sin((k / m) * Math.PI * waves) : 0;
+      path.push(v(q.x - ((b.z - a.z) / d) * off, q.z + ((b.x - a.x) / d) * off));
+    });
+    // a detour over open ground
+    if (i === detourAfter && i < pieces.length - 1) { const d = openGround(rng, zone, p[m]); if (d) path.push(d); }
+  });
+  return path;
+}
+/** A point in the same zone and inside the lease, away from where the drone is. */
+function openGround(rng: Rng, zone: ZoneId, from: Vec): Vec | null {
+  for (let i = 0; i < 12; i++) {
+    const p = v(from.x + rng.noise(380), from.z + rng.noise(380));
+    if (zoneOf(p) === zone && inPoly(p, LEASE) && dist(p, from) > 150) return p;
+  }
+  return null;
 }
 export function sweepPosition(f: ZoneFlight, elapsed: number): { pos: Vec; heading: number; alt: number; scanning: boolean } {
   const start = f.path[0], end = f.path[f.path.length - 1];

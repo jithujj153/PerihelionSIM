@@ -6,8 +6,13 @@ import { inPickupArea, LEASE, NODES, PICKUP_ZONE, PILES, TOWERS, DOCK, CONTROL_R
 import { dist, f1, hhmm, inPoly, Rng, v, Vec } from '../engine/util';
 import type { Sim, Vehicle } from '../engine/sim';
 import { SWATH_RADIUS } from '../engine/drones';
+import { Fleet, type DroneView } from './fleet';
+import { Signals } from './signals';
+import { excavatorModel, updateExcavator, type Excavator } from './excavator';
 import { buildTerrain, height, noise, ribbon, roadInfo } from './terrain';
 import * as M from './models';
+import { groundDetail } from './surface';
+import { lamp } from './glow';
 import type { Stage } from './stage';
 
 export type ViewMode = 'truth' | 'evidence' | 'paper';
@@ -35,8 +40,10 @@ export class World {
   private hidden = new Map<string, { group: THREE.Group; glow: THREE.Mesh; ping: number }>();
   private towers = new Map<string, ReturnType<typeof M.towerModel> & { label: CSS2DObject; look: number }>();
   piles = new Map<string, PileView>();
-  drones = new Map<string, ReturnType<typeof M.droneModel> & { label: CSS2DObject }>();
-  private diggers: { x: ReturnType<typeof M.excavator>; at: Vec; face: number }[] = [];
+  drones = new Map<string, DroneView>();
+  fleet!: Fleet;
+  signals!: Signals;
+  private diggers: { x: Excavator; at: Vec; dig: THREE.Vector3 }[] = [];
   private fenceGroup = new THREE.Group();
   private boundaryGroup = new THREE.Group();
   private zoneGroup = new THREE.Group();
@@ -53,6 +60,7 @@ export class World {
     stage.scene.add(this.group);
     this.group.add(buildTerrain());
     this.buildSite();
+    this.signals = new Signals(this.group, tag);
     this.setSim(sim);
   }
   setSim(sim: Sim) {
@@ -61,6 +69,8 @@ export class World {
     this.vehicles.clear(); this.weightTags.forEach((w) => this.group.remove(w.o)); this.weightTags = [];
     this.seenFx = 0; this.seenEv = sim.gov.evidence.length; this.lastFxT = sim.t; this.scanStart = -99;
     for (const p of this.piles.values()) { p.shown = -1; p.shownExp = -1; }
+    this.fleet.reset();
+    this.signals?.reset();
     for (const g of this.gates.values()) g.open = 0;
   }
   private drop(x: VView) { this.group.remove(x.model.root); x.model.root.remove(x.label); x.label.element.remove(); x.model.plates.forEach((p) => (p.material as THREE.MeshBasicMaterial).map?.dispose()); }
@@ -106,13 +116,12 @@ export class World {
     }
     const place = (o: THREE.Object3D, p: Vec, rot: number, name: string, up: number) => { o.position.copy(v3(p, 0.2)); o.rotation.y = rot; g.add(o); if (name) { const l = tag('site', name); l.position.set(0, up, 0); o.add(l); } };
     place(M.controlRoom(), CONTROL_ROOM, -0.5, '<b>AI control room</b><i>Governing Body</i>', 34);
-    place(M.droneDock(), DOCK, 0.2, '<b>Drone dock</b>', 14);
     place(M.plantShed(), PLANT, 0.5, '', 0);
     place(M.weighbridge(), NODES.DEST.pos, this.heading('DEST') || 1.2, '<b>Destination weighbridge</b><i>third, separate weighing</i>', 20);
     // stockpiles
     for (const p of PILES) {
       const R = p.radius, H = R * 0.55, node = NODES.S1.pos, side = Math.atan2((p.id === 'S2' ? 75 : node.z) - p.pos.z, (p.id === 'S2' ? 735 : node.x) - p.pos.x);
-      const mat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
+      const mat = groundDetail(new THREE.MeshLambertMaterial({ vertexColors: true }), 0.9, 0.85);
       const mesh = new THREE.Mesh(this.pileGeometry(R, H, side, 0), mat); mesh.position.copy(v3(p.pos, 0.1)); mesh.castShadow = true; mesh.receiveShadow = true; g.add(mesh);
       const expected = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ color: 0xff3b30, transparent: true, opacity: 0.42, side: THREE.DoubleSide, depthWrite: false }));
       expected.position.copy(mesh.position); expected.visible = false; expected.renderOrder = 6; g.add(expected);
@@ -120,9 +129,14 @@ export class World {
       const cloud = new THREE.Points(new THREE.BufferGeometry(), new THREE.PointsMaterial({ size: 1.7, vertexColors: true, transparent: true, depthWrite: false })); cloud.position.copy(mesh.position); cloud.visible = false; g.add(cloud);
       this.piles.set(p.id, { mesh, expected, label, shown: -1, shownExp: -1, H, R, side, cloud });
     }
-    for (const [at, from, face] of [[NODES.S1.pos, PILES[0].pos, 0], [v(735, 75), PILES[1].pos, 0]] as [Vec, Vec, number][]) {
-      const x = M.excavator(); const u = 31 / dist(at, from); const p = v(at.x + (from.x - at.x) * u, at.z + (from.z - at.z) * u);
-      const toTruck = Math.atan2(at.x - p.x, at.z - p.z); x.root.position.copy(v3(p, 0.2)); x.root.rotation.y = toTruck; g.add(x.root); this.diggers.push({ x, at, face: face + toTruck });
+    for (const [at, pile] of [[NODES.S1.pos, PILES[0]], [v(735, 75), PILES[1]]] as [Vec, (typeof PILES)[number]][]) {
+      // stand between the truck and the pile, close enough to reach both
+      const u = 22 / dist(at, pile.pos), p = v(at.x + (pile.pos.x - at.x) * u, at.z + (pile.pos.z - at.z) * u);
+      const x = excavatorModel(); x.root.position.copy(v3(p, 0.2)); x.root.rotation.y = Math.atan2(at.x - p.x, at.z - p.z); g.add(x.root, x.rocks);
+      // where the bucket bites: the foot of the pile face nearest the machine
+      const reach = Math.min(21, dist(p, pile.pos) - pile.radius * 0.9) / dist(p, pile.pos);
+      const dig = v3(v(p.x + (pile.pos.x - p.x) * reach, p.z + (pile.pos.z - p.z) * reach), 0.4);
+      this.diggers.push({ x, at, dig });
     }
     // loading zone fence with gaps at the roads and one at the weak spot near S2
     const posts: THREE.BufferGeometry[] = [];
@@ -155,13 +169,11 @@ export class World {
     clip(v(-300, -2700), v(-300, 1800)); clip(v(-300, -300), v(1700, -300)); clip(v(-300, 420), v(1700, 420));
     for (const [z, p] of [['A', v(-850, -200)], ['B', v(560, -1150)], ['C', v(250, 20)], ['D', v(350, 1450)]] as [string, Vec][]) { const l = tag('zone', `<b>Zone ${z}</b><i>drone ${z}</i>`); l.position.copy(v3(p, 60)); this.zoneGroup.add(l); }
     g.add(this.zoneGroup);
-    for (const id of ['A', 'B', 'C', 'D', 'F']) {
-      const m = M.droneModel(id === 'F' ? 0x8a2b2b : 0x2a2d33); const label = tag('drone', id === 'F' ? '<b>Follow drone</b>' : `<b>Drone ${id}</b>`); label.position.set(0, 9, 0); m.root.add(label);
-      g.add(m.root, m.foot); m.root.visible = m.foot.visible = false; this.drones.set(id, { ...m, label });
-    }
+    this.fleet = new Fleet(g, tag);
+    this.drones = this.fleet.drones;
   }
   private pileGeometry(R: number, H: number, side: number, removed: number) {
-    const rings = 22, segs = 72, pos: number[] = [], col: number[] = [], idx: number[] = [], c = new THREE.Color(), a1 = new THREE.Color(0x4d1d18), a2 = new THREE.Color(0x8c4332);
+    const rings = 40, segs = 140, pos: number[] = [], col: number[] = [], idx: number[] = [], c = new THREE.Color(), a1 = new THREE.Color(0x4d1d18), a2 = new THREE.Color(0x8c4332);
     // removal shows as a bite on the loading side; its depth is exaggerated so the eye can follow it
     const bite = Math.min(0.85, removed * 16);
     for (let i = 0; i <= rings; i++) {
@@ -170,11 +182,14 @@ export class World {
         const t = ((j % segs) / segs) * Math.PI * 2, rr = R * u * (1 + (noise(Math.cos(t) * 3 + 9, Math.sin(t) * 3 + 4) - 0.5) * 0.28);
         const x = Math.cos(t) * rr, z = Math.sin(t) * rr;
         let y = H * (1 - Math.pow(u, 1.25)) + (noise(x / 7 + 3, z / 7) - 0.5) * H * 0.16 * (1 - u);
+        // runnels left by tipping and rain, strongest half way down
+        y += (noise(Math.cos(t) * 11 + 3, Math.sin(t) * 11 + u * 1.5) - 0.5) * H * 0.13 * Math.sin(Math.PI * u) + (noise(x / 2.6, z / 2.6 + 5) - 0.5) * 0.9 * (1 - u * u);
         let d = Math.atan2(Math.sin(t - side), Math.cos(t - side));
         const w = Math.exp(-(d * d) / 0.32) * Math.max(0, 1 - Math.pow((u - 0.5) / 0.48, 2));
         y *= 1 - bite * w;
         pos.push(x, i === rings ? -1 : Math.max(0, y), z);
-        c.copy(a1).lerp(a2, noise(x / 11, z / 11 + 7)); col.push(c.r, c.g, c.b);
+        // darker damp foot, lighter dusty crown
+        c.copy(a1).lerp(a2, noise(x / 11, z / 11 + 7)).multiplyScalar(0.82 + 0.36 * (1 - u) + (noise(Math.cos(t) * 17, Math.sin(t) * 17 + u * 2) - 0.5) * 0.3); col.push(c.r, c.g, c.b);
       }
     }
     for (let i = 0; i < rings; i++) for (let j = 0; j < segs; j++) { const a = i * (segs + 1) + j, b = a + segs + 1; idx.push(a, a + 1, b, a + 1, b + 1, b); }
@@ -287,7 +302,7 @@ export class World {
       const trueLoad = x.load + x.extra;
       M.setHeap(m, this.view === 'truth' ? trueLoad : this.view === 'paper' ? trip?.paperNet ?? 0 : x.state === 'loading' && this.sim.answering(x) ? x.load : trip?.sensorNet ?? (this.sim.answering(x) ? 0 : trueLoad));
       m.box.visible = !!x.device; m.led.visible = !!x.device && this.view !== 'paper';
-      if (x.device) (m.led.material as THREE.MeshBasicMaterial).color.set(x.device.tampered || x.device.silent ? 0xff3b30 : x.powerCut ? 0xffb020 : 0x4dff88);
+      if (x.device) lamp(m.led, x.device.tampered || x.device.silent ? 0xff3b30 : x.powerCut ? 0xffb020 : 0x4dff88, 7);
       m.led.scale.setScalar(1 + 0.35 * Math.sin(this.time * 6));
       const info = this.vehicleLabel(x, claimedSilent);
       const dd = camPos.distanceTo(m.root.position);
@@ -367,7 +382,7 @@ export class World {
   /** Hide labels that would sit on top of a more important one. */
   declutter() {
     const rank = (c: DOMTokenList) => c.contains('weight') ? 100 : c.contains('dot') ? 60 : c.contains('sel') ? 95 : c.contains('veh') ? (c.contains('bad') ? 90 : c.contains('bg') ? 20 : 75) : c.contains('pile') ? (c.contains('bad') ? 85 : 42)
-      : c.contains('gate') ? (/ (scan|red|amber|green|bad)/.test(c.value) ? 80 : 45) : c.contains('zone') ? 55 : c.contains('drone') ? 30 : c.contains('site') ? 40 : c.contains('warnspot') ? 35 : 10;
+      : c.contains('gate') ? (/ (scan|red|amber|green|bad)/.test(c.value) ? 80 : 45) : c.contains('zone') ? 55 : c.contains('signal') ? 101 : c.contains('station') ? 87 : c.contains('drone') ? 88 : c.contains('site') ? 40 : c.contains('warnspot') ? 35 : 10;
     const list = [...this.stage.labels.domElement.children].filter((e) => (e as HTMLElement).style.display !== 'none') as HTMLElement[];
     const items = list.map((e) => ({ e, r: e.getBoundingClientRect(), k: rank(e.classList) })).sort((a, b) => b.k - a.k);
     const kept: DOMRect[] = [];
@@ -400,6 +415,7 @@ export class World {
     const sim = this.sim, cam = this.stage.camera.position, paper = this.view === 'paper';
     this.events();
     this.updateVehicles(dt, cam);
+    this.signals.update(sim, dt, this.vehicles, this.gates, !paper);
     this.fenceGroup.visible = this.layers.fence; this.boundaryGroup.visible = this.layers.boundary;
     this.fenceGroup.children.forEach((c) => { if (c instanceof CSS2DObject) c.visible = this.layers.fence && !((c as any).truthOnly && this.view !== 'truth') && cam.distanceTo(c.position) < 2600; });
     this.boundaryGroup.children.forEach((c) => { if (c instanceof CSS2DObject) c.visible = this.layers.boundary && cam.distanceTo(c.position) > 250; });
@@ -413,7 +429,7 @@ export class World {
       g.backup.visible = s.mode === 'backup' || g.backup.position.y > -4.4;
       g.backup.position.y += ((s.mode === 'backup' ? 0 : -4.5) - g.backup.position.y) * Math.min(1, dt * 3);
       const col = paper ? 0x777777 : s.mode === 'stuck' ? 0xff3b30 : { idle: 0x6d747c, scan: 0x3fb6ff, green: 0x35e06f, red: 0xff3b30, amber: 0xffb020 }[s.light];
-      (g.lamp.material as THREE.MeshBasicMaterial).color.set(col); g.lamp.scale.setScalar(s.light === 'idle' && s.mode === 'normal' ? 1 : 1.35 + 0.2 * Math.sin(this.time * 8));
+      lamp(g.lamp, col, paper || (s.light === 'idle' && s.mode === 'normal') ? 0 : 7); g.lamp.scale.setScalar(s.light === 'idle' && s.mode === 'normal' ? 1 : 1.35 + 0.2 * Math.sin(this.time * 8));
       g.laser.visible = s.light === 'scan' && !paper; g.laser.position.z = Math.sin(this.time * 5.5) * 10;
       g.pad.visible = this.layers.pads && !paper;
       const gm = g.padGlow.material as THREE.MeshBasicMaterial; gm.opacity = s.light === 'idle' ? 0.1 : 0.34 + 0.12 * Math.sin(this.time * 9); gm.color.set(s.light === 'red' ? 0xff4a3d : s.light === 'amber' ? 0xffb020 : s.light === 'green' ? 0x35e06f : 0x28c7ff);
@@ -424,7 +440,7 @@ export class World {
       c.root.visible = this.layers.checks;
       const age = this.time - c.ping;
       c.rings.forEach((r, i) => { const u = age * 0.9 - i * 0.22, on = u > 0 && u < 1 && !paper; (r.material as THREE.MeshBasicMaterial).opacity = on ? 0.8 * (1 - u) : 0; r.scale.setScalar(on ? 6 + 55 * u : 0.01); });
-      (c.tip.material as THREE.MeshBasicMaterial).color.set(age < 1.4 ? 0xffffff : 0x59d2ff);
+      lamp(c.tip, age < 1.4 ? 0xffffff : 0x59d2ff, age < 1.4 ? 12 : 6);
       c.label.visible = this.layers.checks && cam.distanceTo(c.root.position) < 900;
     }
     for (const [, h] of this.hidden) {
@@ -435,7 +451,7 @@ export class World {
     for (const [id, t] of this.towers) {
       t.root.visible = this.layers.towers; const on = !sim.towersOff.has(id) && !paper;
       t.ring.visible = this.layers.towers && on; t.beam.visible = this.layers.towers && on;
-      (t.lamp.material as THREE.MeshBasicMaterial).color.set(sim.towersOff.has(id) ? 0xff3b30 : 0x35ff8d);
+      lamp(t.lamp, sim.towersOff.has(id) ? 0xff3b30 : 0x35ff8d);
       const spec = TOWERS.find((x) => x.id === id)!;
       const target = sim.gov.unknown.slice(-12).reverse().find((u) => sim.t - u.t < 0.6 && u.src === `tower ${id}`);
       t.look = target ? Math.atan2(target.pos.x - spec.pos.x, target.pos.z - spec.pos.z) : t.look + dt * 0.8;
@@ -450,22 +466,17 @@ export class World {
       t.label.element.className = `tag click minor ${sim.towersOff.has(id) ? 'bad' : ''}`;
     }
     this.updatePiles(cam);
-    for (const d of sim.drones) {
-      const m = this.drones.get(d.id)!; const on = d.active && !paper;
-      m.root.visible = on; m.foot.visible = on && d.scanning; m.label.visible = on; if (!on) continue;
-      const gy = height(d.pos.x, d.pos.z), want = new THREE.Vector3(d.pos.x, gy + d.alt, d.pos.z);
-      if (m.root.position.distanceTo(want) > 120) m.root.position.copy(want); else m.root.position.lerp(want, Math.min(1, dt * 8));
-      m.root.rotation.y = d.heading; m.root.scale.setScalar(Math.max(1, Math.min(4, cam.distanceTo(m.root.position) / 450)));
-      m.rotors.forEach((r, i) => (r.rotation.z += dt * (i % 2 ? 40 : -40)));
-      const radius = d.id === 'F' ? 42 : SWATH_RADIUS, inv = 1 / m.root.scale.x;
-      m.cone.visible = d.scanning; m.cone.scale.set(radius * inv, d.alt * inv, radius * inv);
-      m.foot.position.set(m.root.position.x, gy + 3, m.root.position.z); m.foot.scale.setScalar(radius);
-    }
+    const followed = sim.follow?.uid ? this.vehiclePos(sim.follow.uid) : null;
+    this.fleet.update(sim, dt, cam, paper, followed?.pos ?? null);
     for (const dg of this.diggers) {
-      const busy = sim.vehicles.some((x) => x.state === 'loading' && dist(x.pos, dg.at) < 40);
-      const c = busy ? (this.time * 0.55) % 1 : 0, swing = busy ? Math.sin(c * Math.PI * 2) : 0;
-      dg.x.turret.rotation.y = busy ? (Math.max(0, -swing) * 2.2) : 0.4;
-      dg.x.boom.rotation.x = busy ? -0.12 + 0.28 * Math.cos(c * Math.PI * 4) : 0.05; dg.x.stick.rotation.x = busy ? 0.35 * swing : 0.15;
+      const truck = sim.vehicles.find((x) => x.state === 'loading' && dist(x.pos, dg.at) < 40), view = truck ? this.vehicles.get(truck.uid) : undefined;
+      let bed: THREE.Vector3 | null = null;
+      if (view && view.model.root.visible) {
+        // middle of the open dump body, at the height of its sides
+        const r = view.model.root, back = (-view.model.length / 2 + (view.model.length - 3.3) / 2 + 0.1) * M.V_SCALE;
+        bed = new THREE.Vector3(r.position.x + Math.sin(r.rotation.y) * back, r.position.y + 2.95 * M.V_SCALE, r.position.z + Math.cos(r.rotation.y) * back);
+      }
+      updateExcavator(dg.x, dt, dg.dig, bed);
     }
   }
   private updatePiles(cam: THREE.Vector3) {

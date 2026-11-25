@@ -36,6 +36,7 @@ export class Sim {
   rng: Rng;
   gov: Governor;
   scheduler: RoundScheduler;
+  private routeRng: Rng;
   vehicles: Vehicle[] = [];
   piles = new Map<string, number>(PILES.map((p) => [p.id, p.tonnes]));
   weather: Weather = 'clear';
@@ -57,6 +58,7 @@ export class Sim {
 
   constructor(seed = 20261125, script = true) {
     this.rng = new Rng(seed);
+    this.routeRng = new Rng(seed ^ 0xd1ce);
     this.scheduler = new RoundScheduler(new Rng(seed ^ 0x5eed));
     this.gov = new Governor({
       follow: (p) => this.startFollow(p),
@@ -214,7 +216,7 @@ export class Sim {
         if (this.weather === 'monsoon') { r.status = 'missed'; this.gov.roundMissed(r.id); }
         else {
           r.status = 'flying';
-          this.flight = { round: r, plans: planSweep(this.rng, r.spot), t0: this.t, atStart: this.gov.expectedInside(), sightings: [], seen: new Set(), done: false };
+          this.flight = { round: r, plans: planSweep(this.routeRng, r.spot), t0: this.t, atStart: this.gov.expectedInside(), sightings: [], seen: new Set(), done: false };
           this.gov.record('AI', 'RECORD', `Counting round ${r.id} launched (${r.trigger === 'alert' ? 'pulled forward by an alert' : 'random time'}): one drone to each of zones A to D.`, 'Drones');
         }
       }
@@ -237,6 +239,7 @@ export class Sim {
   private startFollow(p: Proposal) {
     if (this.weather === 'monsoon') { this.gov.record('AI', 'RECORD', 'Follow drone grounded by weather.', p.subject); this.gov.proposeRadar(); return; }
     this.follow = { p, t0: this.t, uid: null, reported: false };
+    this.gov.record('AI', 'RECORD', 'High alert: the reserve swarm launched from the charging station.', p.subject);
   }
   private runFollow() {
     const f = this.follow, d = this.drones[4];
@@ -412,7 +415,7 @@ export class Sim {
       case 'tower': {
         if (this.towersOff.delete('TW3')) { this.gov.record('AI', 'RECORD', 'Tower TW3 is reporting again.', 'TW3'); return ok('TW3 restored.'); }
         test('tower TW3 is switched off'); this.towersOff.add('TW3');
-        this.at(this.t + 1, () => { if (!this.towersOff.has('TW3')) return; this.gov.onTowerLost('TW3', 'It stopped reporting: blocked, blinded or unplugged.', TOWERS[2].pos); this.gov.propose({ kind: 'follow', origin: 'AI', text: 'Send a drone to check the area watched by tower TW3', subject: 'TW3', pos: v(870, 240), why: { rule: 'Cover a blind spot', inputs: [['Tower', 'TW3 silent']] } }); });
+        this.at(this.t + 1, () => { if (!this.towersOff.has('TW3')) return; this.gov.onTowerLost('TW3', 'It stopped reporting: blocked, blinded or unplugged.', TOWERS[2].pos); this.gov.propose({ kind: 'follow', origin: 'AI', text: 'Launch the drone swarm to check the area watched by tower TW3', subject: 'TW3', pos: v(870, 240), why: { rule: 'Cover a blind spot', inputs: [['Tower', 'TW3 silent']] } }); });
         return ok('TW3 off. The control room notices within a minute.');
       }
       case 'net': {

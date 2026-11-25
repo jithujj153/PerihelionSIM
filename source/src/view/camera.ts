@@ -15,7 +15,8 @@ export type Shot =
   | { k: 'preset'; name: keyof typeof PRESETS }
   | { k: 'point'; pos: Vec; dist?: number }
   | { k: 'drone'; id: string }
-  | { k: 'tour' };
+  | { k: 'tour' }
+  | { k: 'swarm' };
 
 type P = [number, number, number, number, number, number]; // camera x, height above ground, z, target x, height above ground, z
 export const PRESETS = {
@@ -29,6 +30,7 @@ export const PRESETS = {
   zones: [100, 2600, 1900, 100, 0, -150] as P,
   west: [-880, 330, 640, -400, 0, 0] as P,
   pile: [990, 150, 215, 760, 10, 20] as P,
+  dock: [1118, 62, -268, 1200, 2, -368] as P,
   map: [150, 3500, 130, 150, 0, 0] as P,
 };
 const TOUR: P[] = [
@@ -85,6 +87,15 @@ export class Rig {
       const t = p.clone().addScaledVector(d, 2); t.y += shot.close ? 0 : 5;
       return [cam, t];
     }
+    if (shot.k === 'swarm') {
+      const f = world.sim.follow, lead = world.drones.get('F')?.root.position;
+      if (!f || !lead) return preset('dock');
+      const home = world.sim.t - f.t0 >= 3.6, to = home ? { x: PRESETS.dock[3], z: PRESETS.dock[5] } : f.p.pos ?? { x: PRESETS.dock[3], z: PRESETS.dock[5] };
+      const d = new THREE.Vector3(to.x - lead.x, 0, to.z - lead.z); if (d.lengthSq() < 1) d.set(0, 0, 1); d.normalize();
+      const cam = lead.clone().addScaledVector(d, -120); cam.x += d.z * 40; cam.z -= d.x * 40; cam.y += 62;
+      const look = lead.clone().addScaledVector(d, 35); look.y -= 10;
+      return [cam, look];
+    }
     if (shot.k === 'drone') {
       const d = world.sim.drones.find((x) => x.id === shot.id), m = world.drones.get(shot.id);
       if (!d?.active || !m) return preset('zones');
@@ -123,7 +134,9 @@ export class Rig {
       if (this.mode === 'tower') { const t = TOWERS[2], u = world.sim.gov.unknown.at(-1), aim = u && world.sim.t - u.t < 3 ? u.pos : { x: 660, z: -80 }, d = Math.max(1, Math.hypot(aim.x - t.pos.x, aim.z - t.pos.z)); look = at(aim.x, 3, aim.z); pos = at(t.pos.x + ((aim.x - t.pos.x) / d) * 34, 58, t.pos.z + ((aim.z - t.pos.z) / d) * 34); }
       else [pos, look] = this.goal(shot, world);
       if (shot.k === 'chase') rate = 3.2;
+      if (shot.k === 'gate') rate = 4.2;
       if (shot.k === 'tour') rate = 5;
+      if (shot.k === 'swarm') rate = 14;
     }
     const k = this.snap ? 1 : 1 - Math.exp(-dt * rate);
     // when a shot moves a long way, rise a little on the way so the camera does not plough through hills

@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { Sim } from '../engine/sim';
 import { OFFICERS } from '../engine/governor';
 import { clock, hhmm, f1 } from '../engine/util';
+import { nearestNodeLabel } from '../engine/layout';
 import type { Weather, Why } from '../engine/types';
 import { Stage, Quality } from '../view/stage';
 import { World, ViewMode, Layer, Pick } from '../view/scene';
@@ -27,6 +28,8 @@ export class App {
   checked: ReturnType<Sim['gov']['log']['verify']> | null = null;
   backup: string | null = null;
   ignoreBranch = false;
+  /** Act 5 has finished its story; time rests until the presenter moves on. */
+  caseClosed = false;
   private onceDone = new Set<string>();
   private banners: Banner[] = [];
   private seenAlert = 0; private seenLog = 0; private seenProp = 0;
@@ -50,6 +53,7 @@ export class App {
     this.bind();
     this.goAct(1);
     this.resize();
+    this.world.update(0); this.stage.warmUp();
   }
 
   /* ------------------------------------------------------------ story */
@@ -57,7 +61,7 @@ export class App {
   private autoDecide = (p: { t: number }) => (this.ignoreBranch && p.t < 52 ? 'ignore' : 'approve') as 'ignore' | 'approve';
   private rebuild() {
     this.sim = new Sim(SEED); this.world.setSim(this.sim); this.stage.setWeather('clear', true);
-    this.selected = this.subject = this.target = this.focus = ''; this.open.clear(); this.checked = null; this.backup = null; this.reveal = false; this.seenProp = 0;
+    this.selected = this.subject = this.target = this.focus = ''; this.open.clear(); this.checked = null; this.backup = null; this.speeds.clear(); this.reveal = false; this.seenProp = 0;
   }
   private fastForward(t: number) {
     // proposals that are already waiting are settled the same way as new ones
@@ -67,10 +71,13 @@ export class App {
   private skipNews() { this.seenAlert = this.sim.gov.alerts.length; this.seenLog = this.sim.gov.log.entries.length; this.seenProp = this.sim.gov.proposals.length; }
   goAct(n: number, o: { ignore?: boolean; rebuild?: boolean } = {}) {
     const act = ACTS[n - 1]; if (!act) return;
+    // moving on from a closed case must not count as skipping the decision
+    const fromClosed = this.act === 5 && n === 6 && this.caseClosed;
+    this.caseClosed = false;
     this.closeModal(); this.clearBanners(); this.decisionOpen = -1; this.override = null; this.sim.autoDecide = null;
     const back = n <= 6 && this.sim.t > act.start + (n <= 2 ? 0.8 : 0.4);
     if (o.rebuild || back) { this.ignoreBranch = o.ignore ?? n >= 6; this.rebuild(); }
-    else if (this.sim.t < act.start) this.ignoreBranch = o.ignore ?? n >= 6;
+    else if (this.sim.t < act.start && !fromClosed) this.ignoreBranch = o.ignore ?? n >= 6;
     if (n === 8 && this.sim.t < 100) this.fastForward(100);
     else if (this.sim.t < act.start) this.fastForward(act.start);
     this.act = n; this.actTime = 0; this.onceDone.clear(); this.playing = true; this.autoPaused = false;
@@ -215,7 +222,7 @@ export class App {
 
   /* ------------------------------------------------------------ screen */
   private renderActs() {
-    $('actList').innerHTML = ACTS.map((a) => `<button data-act="goact" data-arg="${a.id}" class="${a.id === this.act ? 'on' : a.id < this.act ? 'done' : ''}"><small>${a.minutes}</small>${a.id} · ${a.name}</button>`).join('');
+    $('actList').innerHTML = ACTS.map((a) => `<button data-act="goact" data-arg="${a.id}" class="${a.id === this.act ? 'on' : a.id < this.act ? 'done' : ''}"><span class="n">${a.id}</span><span class="t"><b>${a.name}</b><small>${a.minutes}</small></span></button>`).join('');
     $('caption').innerHTML = `<small>What the panel learns</small> ${ACTS[this.act - 1].learns}`;
     ($('next') as HTMLButtonElement).disabled = this.act === 8; ($('prev') as HTMLButtonElement).disabled = this.act === 1;
   }
@@ -237,14 +244,44 @@ export class App {
     ($('weather') as HTMLSelectElement).value = this.sim.weather;
     this.readout();
   }
-  /** A small card showing what the sensors are saying about the truck in focus. */
+  /** Speed worked out from the positions a device has reported. */
+  private speeds = new Map<string, { x: number; z: number; t: number; kmh: number }>();
+  private truckSpeed(device: string, p: { x: number; z: number }, t: number) {
+    const last = this.speeds.get(device);
+    if (!last || t < last.t) { this.speeds.set(device, { x: p.x, z: p.z, t, kmh: 0 }); return 0; }
+    if (t > last.t) this.speeds.set(device, { x: p.x, z: p.z, t, kmh: (Math.hypot(p.x - last.x, p.z - last.z) / (t - last.t)) * 0.06 });
+    return this.speeds.get(device)!.kmh;
+  }
+  /** Live data from the truck in focus: only what its device and the fixed sensors have reported. */
   private readout() {
     const uid = this.selected || (this.act >= 3 && this.act <= 7 ? this.focus : ''), x = uid ? this.sim.find(uid) : undefined, el = $('readout');
-    const subject = x?.device ? x.device.id : x ? 'Unknown' : '';
-    const list = x && x.state !== 'gone' ? this.sim.gov.evidence.filter((e) => (x.device ? e.subject === subject : e.subject.includes(x.plate) )).slice(-4) : [];
-    if (!list.length || this.insetShown || this.world.view === 'paper') { el.hidden = true; return; }
-    const title = this.world.view === 'truth' ? x!.name : x!.device ? this.sim.gov.registry.get(x!.device.id)?.label ?? x!.name : 'Unidentified vehicle';
-    el.innerHTML = `<h4>${esc(title)} <span>${x!.device ? x!.device.id : 'no device'}</span></h4>${list.map((e) => `<div class="${e.status}"><b>${esc(e.src)}${e.node ? ' ' + esc(e.node) : ''}</b><span>${esc(e.value)}</span></div>`).join('')}`;
+    if (!x || x.state === 'gone' || this.world.view === 'paper' || (this.insetShown && !this.selected)) { el.hidden = true; return; }
+    const g = this.sim.gov, reg = x.device ? g.registry.get(x.device.id) : undefined, trip = x.device ? g.trips.get(x.device.id) : undefined;
+    const row = (k: string, val: string, cls = '') => `<div class="${cls}"><b>${k}</b><span>${esc(val)}</span></div>`;
+    const seen = g.evidence.filter((e) => (x.device ? e.subject === x.device.id : e.subject.includes(x.plate)));
+    const hand = [...seen].reverse().find((e) => e.src === 'Device radio');
+    const handRow = hand ? row('Last gate', `${hand.node}: ${hand.value}`, hand.status) : '';
+    let html: string;
+    if (!x.device || !reg) {
+      html = `<h4>No device on this truck <span>nothing to read</span></h4>${row('Link', 'No signal: the system has no data from it', 'bad')}${handRow}`;
+    } else if (!trip) {
+      html = `<h4>Truck device · ${esc(x.device.id)} <span>${esc(reg.plate)}</span></h4>${row('Link', 'Not yet checked at a gate')}${handRow}`;
+    } else {
+      const opened = g.alerts.some((a) => a.subject === x.device!.id && a.title === 'Device housing opened');
+      const quiet = this.sim.t - trip.lastSeen, silent = trip.inside && quiet > 1.5;
+      const link = opened ? row('Link', 'Box opened: device locked itself', 'bad') : silent ? row('Link', `No message for ${f1(quiet)} min`, 'bad') : row('Link', 'Sending data', 'ok');
+      const loading = x.state === 'loading' && this.sim.answering(x);
+      const load = loading ? `${f1(x.load)} t and rising` : trip.sensorNet !== undefined ? `${f1(trip.sensorNet)} t` : 'empty';
+      const kmh = this.truckSpeed(x.device.id, trip.claimed, trip.lastSeen);
+      html = `<h4><i class="live ${opened || silent ? 'bad' : ''}"></i>Truck device · ${esc(x.device.id)} <span>${esc(reg.plate)}</span></h4>${link}`
+        + row('Position', `near ${nearestNodeLabel(trip.claimed)} (${Math.round(trip.claimed.x)}, ${Math.round(-trip.claimed.z)} m)`)
+        + row('Speed', `${Math.round(kmh)} km/h, from reported positions`)
+        + row('Load sensor', load)
+        + row('Power', trip.battery ? 'Own battery: truck power lost' : 'Truck supply', trip.battery ? 'warn' : '')
+        + row('Last message', hhmm(trip.lastSeen))
+        + row('Status', trip.status) + handRow;
+    }
+    if (el.dataset.html !== html) { el.dataset.html = html; el.innerHTML = html; }
     el.hidden = false;
   }
   private bind() {
@@ -323,18 +360,29 @@ export class App {
     else if (this.playing && this.act <= 2) act.tick(this, this.actTime);
     for (const b of [...this.banners]) if (this.now > b.until && this.playing) this.dropBanner(b); else if (!this.playing && b.until !== Infinity) b.until += dt;
     if (this.stage.weather !== this.sim.weather) this.stage.setWeather(this.sim.weather);
+    this.world.signals.focus = this.selected || this.focus;
     this.world.update(this.playing ? dt : dt * 0.35);
     this.rig.update(dt, this.world);
     this.stage.update(dt, this.rig.target);
     const r = this.stage.renderer;
     r.setScissorTest(false); r.setViewport(0, 0, window.innerWidth, window.innerHeight);
-    r.render(this.stage.scene, this.stage.camera);
+    this.stage.render();
     this.stage.labels.render(this.stage.scene, this.stage.camera);
     if (++this.frames % 3 === 0) this.world.declutter();
     document.body.classList.toggle('hero', !$('hero').hidden);
     this.drawInset();
+    this.alertMode();
     this.render();
     this.measure(dtReal);
+  }
+  /** High-alert mode: a badge and a red frame while the swarm is out, amber while it waits for two officers. */
+  private alertMode() {
+    const mode = this.world.fleet.mode, badge = $('alertmode'), show = (mode === 'swarm' || mode === 'waiting') && this.world.view !== 'paper' && $('modal').hidden === true;
+    badge.hidden = !show; $('alertframe').hidden = !(show && mode === 'swarm');
+    if (!show || badge.dataset.mode === mode) return;
+    badge.dataset.mode = mode;
+    badge.querySelector('b')!.textContent = mode === 'swarm' ? 'HIGH ALERT' : 'ALERT';
+    badge.querySelector('span')!.textContent = mode === 'swarm' ? 'Drone swarm investigating' : 'Swarm ready at the charging station · two officers must approve';
   }
   /** Picture-in-picture: what a drone's camera sees. */
   private drawInset() {
@@ -350,11 +398,11 @@ export class App {
     else { const x = p.x + Math.sin(d!.heading) * 55, z = p.z + Math.cos(d!.heading) * 55; look = new THREE.Vector3(x, height(x, z), z); cam.fov = 55; }
     cam.lookAt(look); cam.updateProjectionMatrix();
     const rect = pip.getBoundingClientRect(), r = this.stage.renderer, y = window.innerHeight - rect.bottom;
-    pip.querySelector('span')!.textContent = follow ? 'Follow drone camera' : 'Drone C camera · counting round';
+    pip.querySelector('span')!.textContent = follow ? 'Swarm lead camera' : 'Drone C camera · counting round';
     const hidden = [...this.world.drones.values()].map((x) => [x, x.cone.visible, x.root.visible] as const);
     m.root.visible = false;
     r.setScissorTest(true); r.setScissor(rect.left, y, rect.width, rect.height); r.setViewport(rect.left, y, rect.width, rect.height);
-    r.render(this.stage.scene, cam);
+    r.shadowMap.autoUpdate = false; r.render(this.stage.scene, cam); r.shadowMap.autoUpdate = true;
     r.setScissorTest(false);
     hidden.forEach(([x, c, v2]) => { x.cone.visible = c; x.root.visible = v2; });
   }

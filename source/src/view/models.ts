@@ -1,10 +1,15 @@
 /* Procedural models. Vehicles and gates are drawn about twice life size so they read on screen. */
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { Rng } from '../engine/util';
 
 export const V_SCALE = 2;
 const mat = new THREE.MeshLambertMaterial({ vertexColors: true });
+/* vehicle paint and glass mirror the sky; everything fixed to the ground stays matt */
+const paintMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.46, metalness: 0.18, envMapIntensity: 0.75 });
+const glassMat = new THREE.MeshStandardMaterial({ color: 0x5b7f9c, roughness: 0.05, metalness: 0.85, envMapIntensity: 1.5 });
+export function setReflections(env: THREE.Texture) { for (const m of [paintMat, glassMat]) { m.envMap = env; m.needsUpdate = true; } }
 function paint(g: THREE.BufferGeometry, color: number) {
   const gg = g.index ? g.toNonIndexed() : g, n = gg.attributes.position.count, c = new THREE.Color(color), a = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) a.set([c.r, c.g, c.b], i * 3);
@@ -13,6 +18,8 @@ function paint(g: THREE.BufferGeometry, color: number) {
 }
 export const box = (w: number, h: number, d: number, x: number, y: number, z: number, color: number, rx = 0) => { const g = new THREE.BoxGeometry(w, h, d); if (rx) g.rotateX(rx); g.translate(x, y, z); return paint(g, color); };
 export const cyl = (r0: number, r1: number, h: number, x: number, y: number, z: number, color: number, seg = 10, axis: 'x' | 'y' | 'z' = 'y') => { const g = new THREE.CylinderGeometry(r0, r1, h, seg); if (axis === 'x') g.rotateZ(Math.PI / 2); if (axis === 'z') g.rotateX(Math.PI / 2); g.translate(x, y, z); return paint(g, color); };
+/** A box with softened edges, which catch the light the way pressed steel does. */
+export const rbox = (w: number, h: number, d: number, x: number, y: number, z: number, color: number, r = 0.1, rx = 0) => { const g = new RoundedBoxGeometry(w, h, d, 2, Math.min(r, w / 2, h / 2, d / 2) * 0.98); if (rx) g.rotateX(rx); g.translate(x, y, z); return paint(g, color); };
 export function merged(parts: THREE.BufferGeometry[], cast = true) { const m = new THREE.Mesh(mergeGeometries(parts)!, mat); m.castShadow = cast; m.receiveShadow = true; return m; }
 
 export function plateTexture(text: string) {
@@ -30,44 +37,94 @@ export interface TruckModel {
 let heapGeo: THREE.BufferGeometry | null = null;
 function oreHeap() {
   if (heapGeo) return heapGeo;
-  const g = new THREE.ConeGeometry(1, 1, 18, 5), r = new Rng(12), p = g.attributes.position;
+  const g = new THREE.ConeGeometry(1, 1, 34, 11), r = new Rng(12), p = g.attributes.position;
   const jitter = new Map<string, number>();
   for (let i = 0; i < p.count; i++) {
     const k = `${p.getX(i).toFixed(2)},${p.getY(i).toFixed(2)},${p.getZ(i).toFixed(2)}`;
-    if (!jitter.has(k)) jitter.set(k, p.getY(i) > -0.45 ? r.range(0.82, 1.2) : 1);
+    if (!jitter.has(k)) jitter.set(k, p.getY(i) > -0.45 ? r.range(0.88, 1.13) : 1);
     const j = jitter.get(k)!; p.setXYZ(i, p.getX(i) * j, p.getY(i) * j, p.getZ(i) * j);
   }
-  g.translate(0, 0.5, 0); g.computeVertexNormals();
-  return (heapGeo = g);
+  g.deleteAttribute('uv');
+  const parts: THREE.BufferGeometry[] = [g.toNonIndexed()];
+  for (let i = 0; i < 90; i++) {
+    const u = Math.sqrt(r.next()) * 0.92, a = r.next() * 6.283, s = r.range(0.045, 0.1);
+    const lump = new THREE.DodecahedronGeometry(s, 0); lump.deleteAttribute('uv'); lump.scale(1, 0.7, 0.75); lump.rotateY(r.next() * 6); lump.rotateX(r.next() * 2);
+    lump.translate(Math.cos(a) * u, 0.5 - u + s * 0.25, Math.sin(a) * u); parts.push(lump);
+  }
+  const all = mergeGeometries(parts)!; all.translate(0, 0.5, 0); all.computeVertexNormals();
+  return (heapGeo = all);
 }
 const oreMat = new THREE.MeshLambertMaterial({ color: 0x6e2b22, flatShading: true });
-const wheelGeo = (() => { const t = new THREE.CylinderGeometry(0.62, 0.62, 0.5, 14); const hub = new THREE.CylinderGeometry(0.26, 0.26, 0.54, 8); const spoke = new THREE.BoxGeometry(0.2, 0.56, 0.7); return mergeGeometries([paint(t, 0x17171a), paint(hub, 0xb9bdc4), paint(spoke, 0x6a6e76)])!.rotateZ(Math.PI / 2); })();
+const wheelGeo = (() => {
+  const tyre = new THREE.LatheGeometry([[0.34, -0.23], [0.47, -0.27], [0.58, -0.24], [0.62, -0.15], [0.62, 0.15], [0.58, 0.24], [0.47, 0.27], [0.34, 0.23]].map(([r, y]) => new THREE.Vector2(r, y)), 22);
+  const parts = [paint(tyre, 0x1b1b1e)];
+  parts.push(paint(new THREE.CylinderGeometry(0.36, 0.36, 0.4, 20), 0x8b9097), paint(new THREE.CylinderGeometry(0.27, 0.27, 0.46, 20), 0x4a4e55), paint(new THREE.CylinderGeometry(0.15, 0.17, 0.58, 12), 0xc4c8ce));
+  // one bar across the hub shows the wheel turning
+  parts.push(paint(new THREE.BoxGeometry(0.12, 0.54, 0.5), 0x6a6e76));
+  return mergeGeometries(parts)!.rotateZ(Math.PI / 2);
+})();
+/** Road dust settles on the lower half of a working truck. */
+function dusty(g: THREE.BufferGeometry) {
+  const p = g.attributes.position, c = g.attributes.color, dust = new THREE.Color(0x8a5238), r = new Rng(31);
+  for (let i = 0; i < p.count; i++) {
+    const k = Math.max(0, Math.min(1, (2.15 - p.getY(i)) / 1.5)) * 0.55 + ((r.next() - 0.5) * 0.05);
+    c.setXYZ(i, c.getX(i) + (dust.r - c.getX(i)) * Math.max(0, k), c.getY(i) + (dust.g - c.getY(i)) * Math.max(0, k), c.getZ(i) + (dust.b - c.getZ(i)) * Math.max(0, k));
+  }
+  return g;
+}
 
 /** A tipper truck facing +z, wheels on y = 0. */
 export function truckModel(color: number, plate: string, length: number): TruckModel {
   const root = new THREE.Group(), inner = new THREE.Group(); inner.scale.setScalar(V_SCALE); root.add(inner);
   const L = length, half = L / 2, bedL = L - 3.3, bedZ = -half + bedL / 2 + 0.1;
-  const dark = 0x25272b, glass = 0x182838;
+  const dark = 0x25272b;
   const bedColor = new THREE.Color(color).multiplyScalar(0.9).getHex();
+  const front = half - 0.25, chrome = 0xc3c7cd, trim = 0x34373d;
   const parts = [
-    box(1.3, 0.35, L - 0.5, 0, 0.95, 0, dark),
-    box(2.5, 1.75, 2.1, 0, 2.15, half - 1.25, color), box(2.35, 0.5, 1.6, 0, 3.25, half - 1.45, color),
-    box(2.2, 0.8, 0.08, 0, 2.55, half - 0.18, glass), box(0.06, 0.65, 0.9, 1.26, 2.55, half - 1.0, glass), box(0.06, 0.65, 0.9, -1.26, 2.55, half - 1.0, glass),
-    box(2.6, 0.45, 0.35, 0, 1.15, half - 0.15, 0x3a3d43), box(0.38, 0.22, 0.1, 0.9, 1.5, half - 0.17, 0xfff3c4), box(0.38, 0.22, 0.1, -0.9, 1.5, half - 0.17, 0xfff3c4),
-    box(0.1, 0.5, 0.16, 1.45, 2.8, half - 0.4, dark), box(0.1, 0.5, 0.16, -1.45, 2.8, half - 0.4, dark),
-    // open dump body
-    box(2.5, 0.16, bedL, 0, 1.55, bedZ, bedColor), box(0.14, 1.35, bedL, 1.25, 2.25, bedZ, bedColor), box(0.14, 1.35, bedL, -1.25, 2.25, bedZ, bedColor),
-    box(2.6, 1.7, 0.16, 0, 2.4, bedZ + bedL / 2, bedColor), box(2.5, 1.25, 0.14, 0, 2.2, bedZ - bedL / 2, bedColor),
-    box(2.7, 0.12, 1.1, 0, 3.28, bedZ + bedL / 2 + 0.45, bedColor),
-    box(2.4, 0.15, 0.2, 0, 1.0, -half + 0.2, 0xaa2a22),
+    // chassis
+    box(0.22, 0.34, L - 0.5, 0.52, 0.95, 0, dark), box(0.22, 0.34, L - 0.5, -0.52, 0.95, 0, dark), box(1.2, 0.2, L - 1.4, 0, 0.86, -0.2, 0x15161a),
+    // cab, roof fairing and sun visor
+    rbox(2.5, 1.8, 2.0, 0, 2.15, half - 1.25, color, 0.24), rbox(2.3, 0.42, 1.55, 0, 3.18, half - 1.45, color, 0.18), rbox(2.42, 0.09, 0.36, 0, 3.03, front + 0.07, trim, 0.04),
+    box(0.07, 0.8, 0.07, 0, 2.55, front + 0.05, trim),
+    // grille and bumper
+    rbox(1.46, 0.48, 0.08, 0, 1.78, front, 0x17181c, 0.03), box(1.3, 0.05, 0.05, 0, 1.92, front + 0.05, chrome), box(1.3, 0.05, 0.05, 0, 1.79, front + 0.05, chrome), box(1.3, 0.05, 0.05, 0, 1.66, front + 0.05, chrome),
+    rbox(2.64, 0.48, 0.34, 0, 1.15, half - 0.15, trim, 0.12),
+    // mud flaps, rear bar and tail lamps
+    box(0.56, 0.62, 0.06, 1.12, 0.7, -half + 0.22, 0x121317), box(0.56, 0.62, 0.06, -1.12, 0.7, -half + 0.22, 0x121317),
+    box(2.4, 0.16, 0.2, 0, 1.0, -half + 0.12, 0x8f241d), rbox(0.34, 0.18, 0.08, 0.95, 1.2, -half + 0.08, 0xe0342a, 0.04), rbox(0.34, 0.18, 0.08, -0.95, 1.2, -half + 0.08, 0xe0342a, 0.04),
+    // fuel tank with straps (left side; the device sits on the right), exhaust and air filter
+    cyl(0.42, 0.42, 1.25, -0.98, 0.98, half - 2.75, 0x9aa0a8, 18, 'z'), cyl(0.44, 0.44, 0.09, -0.98, 0.98, half - 3.1, dark, 18, 'z'), cyl(0.44, 0.44, 0.09, -0.98, 0.98, half - 2.4, dark, 18, 'z'),
+    cyl(0.12, 0.12, 2.1, -1.0, 2.4, half - 2.5, 0x7c8087, 12), cyl(0.17, 0.17, 0.8, -1.0, 2.2, half - 2.5, 0x55585e, 12), cyl(0.2, 0.2, 0.55, -0.35, 2.1, half - 2.45, trim, 14),
+    // tipping ram
+    cyl(0.1, 0.1, 0.8, 0, 1.2, bedZ + bedL / 2 - 0.7, chrome, 10),
+    // open dump body with top rails
+    box(2.5, 0.16, bedL, 0, 1.55, bedZ, bedColor), rbox(0.14, 1.35, bedL, 1.25, 2.25, bedZ, bedColor, 0.04), rbox(0.14, 1.35, bedL, -1.25, 2.25, bedZ, bedColor, 0.04),
+    rbox(2.6, 1.7, 0.16, 0, 2.4, bedZ + bedL / 2, bedColor, 0.05), rbox(2.5, 1.25, 0.14, 0, 2.2, bedZ - bedL / 2, bedColor, 0.05),
+    rbox(0.24, 0.14, bedL + 0.1, 1.27, 2.95, bedZ, color, 0.06), rbox(0.24, 0.14, bedL + 0.1, -1.27, 2.95, bedZ, color, 0.06), rbox(2.62, 0.14, 0.22, 0, 2.85, bedZ - bedL / 2, color, 0.06),
+    rbox(2.72, 0.12, 1.1, 0, 3.28, bedZ + bedL / 2 + 0.45, bedColor, 0.05),
   ];
-  for (let z = bedZ - bedL / 2 + 0.7; z < bedZ + bedL / 2 - 0.3; z += 1.15) parts.push(box(2.66, 1.25, 0.12, 0, 2.2, z, color));
-  const body = merged(parts); inner.add(body);
+  for (const x of [1, -1]) {
+    parts.push(
+      rbox(0.4, 0.24, 0.1, 0.88 * x, 1.42, half - 0.0, 0xfff4cd, 0.05), rbox(0.14, 0.14, 0.09, 1.2 * x, 1.42, half - 0.0, 0xffa221, 0.04),
+      // steps, mirrors and roof beacons
+      box(0.32, 0.08, 0.7, 1.16 * x, 0.72, half - 2.0, trim),
+      box(0.34, 0.05, 0.05, 1.38 * x, 2.95, half - 0.42, dark), box(0.05, 0.05, 0.05, 1.5 * x, 2.7, half - 0.42, dark), rbox(0.12, 0.56, 0.22, 1.56 * x, 2.66, half - 0.42, dark, 0.05),
+      cyl(0.1, 0.13, 0.14, 0.75 * x, 3.46, half - 1.3, 0xffa221, 10),
+    );
+    for (const z of [half - 1.15, -half + 2.35, -half + 0.95]) { const arch = new THREE.CylinderGeometry(0.76, 0.76, 0.5, 18, 1, true, 0, Math.PI); arch.rotateZ(Math.PI / 2); arch.translate(1.15 * x, 0.66, z); parts.push(paint(arch, trim)); }
+  }
+  for (let z = bedZ - bedL / 2 + 0.7; z < bedZ + bedL / 2 - 0.3; z += 1.15) parts.push(rbox(2.68, 1.25, 0.13, 0, 2.2, z, color, 0.05));
+  const body = new THREE.Mesh(dusty(mergeGeometries(parts)!), paintMat); body.castShadow = true; body.receiveShadow = true; inner.add(body);
+  const panes = [
+    new RoundedBoxGeometry(2.14, 0.8, 0.06, 2, 0.028).translate(0, 2.55, front + 0.012),
+    ...[1, -1].map((x) => new RoundedBoxGeometry(0.05, 0.68, 0.88, 2, 0.022).translate(1.258 * x, 2.55, half - 1.05)),
+  ];
+  body.add(new THREE.Mesh(mergeGeometries(panes)!, glassMat));
   const wheelPos: [number, number, number][] = [];
   for (const z of [half - 1.15, -half + 2.35, -half + 0.95]) for (const x of [-1.15, 1.15]) wheelPos.push([x, 0.62, z]);
-  const wheels = new THREE.InstancedMesh(wheelGeo, mat, wheelPos.length); wheels.castShadow = true; inner.add(wheels);
+  const wheels = new THREE.InstancedMesh(wheelGeo, paintMat, wheelPos.length); wheels.castShadow = true; inner.add(wheels);
   const heap = new THREE.Mesh(oreHeap(), oreMat); heap.position.set(0, 1.62, bedZ); heap.visible = false; heap.castShadow = true; inner.add(heap);
-  const dev = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.4, 0.8), new THREE.MeshLambertMaterial({ color: 0x1d5f9f, emissive: 0x0a2a55 }));
+  const dev = new THREE.Mesh(new RoundedBoxGeometry(0.45, 0.4, 0.8, 2, 0.08), new THREE.MeshLambertMaterial({ color: 0x1d5f9f, emissive: 0x0a2a55 }));
   dev.position.set(1.15, 1.2, half - 2.6); inner.add(dev);
   const led = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8), new THREE.MeshBasicMaterial({ color: 0x4dff88 })); led.position.set(1.42, 1.34, half - 2.4); inner.add(led);
   const plates = [1, -1].map((s) => { const m = new THREE.Mesh(new THREE.PlaneGeometry(1.7, 0.42), new THREE.MeshBasicMaterial({ map: plateTexture(plate) })); m.position.set(0, s > 0 ? 1.13 : 1.45, s > 0 ? half + 0.04 : -half - 0.0); if (s < 0) m.rotation.y = Math.PI; inner.add(m); return m; });
@@ -90,25 +147,37 @@ export function setHeap(t: TruckModel, tonnes: number) {
   t.heap.scale.set(1.2 * (0.55 + 0.45 * s), 2.5 * s, (bedL / 2) * (0.5 + 0.48 * s));
 }
 
-export function excavator() {
-  const root = new THREE.Group(); root.scale.setScalar(V_SCALE);
-  root.add(merged([box(0.9, 1, 5.2, 1.5, 0.5, 0, 0x26282b), box(0.9, 1, 5.2, -1.5, 0.5, 0, 0x26282b), box(2.2, 0.5, 3, 0, 1, 0, 0x33363a)]));
-  const turret = new THREE.Group(); turret.position.y = 1.3; root.add(turret);
-  turret.add(merged([box(3, 1.4, 3.6, 0, 0.7, -0.3, 0xe58f1d), box(1.2, 1.5, 1.6, -0.8, 2.1, 0.6, 0xe58f1d), box(1.05, 1.1, 0.08, -0.8, 2.2, 1.43, 0x1b2c3d), box(3, 0.7, 0.9, 0, 0.7, -2.4, 0x3a3d43)]));
-  const boom = new THREE.Group(); boom.position.set(0.7, 1.1, 1); turret.add(boom);
-  boom.add(merged([box(0.55, 0.65, 5.2, 0, 1.55, 2.1, 0xe58f1d, -0.62)]));
-  const stick = new THREE.Group(); stick.position.set(0, 3.05, 4.2); boom.add(stick);
-  stick.add(merged([box(0.4, 0.45, 3.6, 0, -1.25, 0.85, 0xe58f1d, 0.98), box(1.5, 0.9, 1.1, 0, -2.5, 1.75, 0x33363a)]));
-  return { root, turret, boom, stick };
-}
-
+/** A survey quadcopter: shell, four arms with motors, landing skids and a camera that looks down. */
 export function droneModel(color = 0x2a2d33) {
   const root = new THREE.Group(), inner = new THREE.Group(); inner.scale.setScalar(3.2); root.add(inner);
-  inner.add(merged([box(1.1, 0.35, 1.5, 0, 0, 0, color), box(3.6, 0.12, 0.18, 0, 0.05, 0, 0x888d95, 0), box(0.18, 0.12, 3.6, 0, 0.05, 0, 0x888d95), cyl(0.3, 0.3, 0.4, 0, -0.35, 0.55, 0x111111), box(0.4, 0.12, 0.4, 0, 0.24, -0.4, 0xff6a2a)], false));
+  const dark = 0x1c1f25, alloy = 0x6d737d, Y = 0.5, ARM = 1.5;
+  const parts = [
+    rbox(0.92, 0.34, 1.34, 0, Y, 0, color, 0.17), rbox(0.62, 0.2, 0.8, 0, Y + 0.23, -0.12, color, 0.1), rbox(0.5, 0.08, 0.34, 0, Y + 0.34, -0.28, 0x16314f, 0.04),
+    rbox(0.52, 0.22, 0.2, 0, Y - 0.02, 0.72, dark, 0.09),
+    // camera on its gimbal
+    box(0.08, 0.2, 0.08, 0, Y - 0.24, 0.42, alloy), rbox(0.38, 0.3, 0.34, 0, Y - 0.42, 0.45, dark, 0.12), cyl(0.11, 0.11, 0.12, 0, Y - 0.42, 0.65, 0x3b6a8f, 14, 'z'), cyl(0.065, 0.065, 0.14, 0, Y - 0.42, 0.67, 0x07090c, 12, 'z'),
+    cyl(0.025, 0.025, 0.4, -0.22, Y + 0.45, -0.52, dark, 6), cyl(0.025, 0.025, 0.4, 0.22, Y + 0.45, -0.52, dark, 6),
+  ];
+  for (const x of [-0.5, 0.5]) {
+    parts.push(cyl(0.045, 0.045, 1.5, x * 1.12, -0.06, 0, dark, 8, 'z'));
+    for (const z of [-0.42, 0.42]) { const leg = new THREE.CylinderGeometry(0.04, 0.04, 0.52, 7); leg.rotateZ(x > 0 ? 0.3 : -0.3); leg.translate(x * 0.96, 0.18, z); parts.push(paint(leg, dark)); }
+  }
+  const hubs: [number, number][] = [];
+  for (const sx of [1, -1]) for (const sz of [1, -1]) {
+    const x = (sx * ARM) / Math.SQRT2 * 1.18, z = (sz * ARM) / Math.SQRT2 * 1.18; hubs.push([x, z]);
+    const len = Math.hypot(x, z), arm = new THREE.CylinderGeometry(0.075, 0.11, len, 10); arm.rotateX(Math.PI / 2); arm.rotateY(Math.atan2(x, z)); arm.translate(x / 2, Y + 0.03, z / 2);
+    parts.push(paint(arm, alloy), cyl(0.16, 0.19, 0.26, x, Y + 0.08, z, dark, 14), cyl(0.07, 0.07, 0.1, x, Y + 0.25, z, 0xc9ced6, 10), cyl(0.1, 0.1, 0.05, x, Y - 0.08, z, sz > 0 ? 0xffffff : color, 10));
+  }
+  const body = new THREE.Mesh(mergeGeometries(parts)!, paintMat); inner.add(body);
   const rotors: THREE.Mesh[] = [];
-  const rm = new THREE.MeshBasicMaterial({ color: 0xdfe8f2, transparent: true, opacity: 0.35, side: THREE.DoubleSide, depthWrite: false });
-  for (const [x, z] of [[1.8, 0], [-1.8, 0], [0, 1.8], [0, -1.8]]) { const r = new THREE.Mesh(new THREE.CircleGeometry(0.85, 16), rm); r.rotation.x = -Math.PI / 2; r.position.set(x, 0.2, z); inner.add(r); const b = new THREE.Mesh(new THREE.BoxGeometry(1.65, 0.03, 0.12), new THREE.MeshBasicMaterial({ color: 0x15171a })); r.add(b); b.rotation.x = Math.PI / 2; rotors.push(r); }
-  const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 6), new THREE.MeshBasicMaterial({ color: 0x35ff8d })); beacon.position.set(0, 0.45, 0); inner.add(beacon);
+  const rm = new THREE.MeshBasicMaterial({ color: 0xdfe8f2, transparent: true, opacity: 0.2, side: THREE.DoubleSide, depthWrite: false });
+  const blade = new THREE.SphereGeometry(1, 12, 6); blade.scale(0.72, 0.075, 0.012);
+  const bm = new THREE.MeshBasicMaterial({ color: 0x23262c });
+  for (const [x, z] of hubs) {
+    const r = new THREE.Mesh(new THREE.CircleGeometry(0.76, 28), rm); r.rotation.x = -Math.PI / 2; r.position.set(x, Y + 0.31, z); inner.add(r);
+    r.add(new THREE.Mesh(blade, bm)); rotors.push(r);
+  }
+  const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.17, 12, 8), new THREE.MeshBasicMaterial({ color: 0x35ff8d })); beacon.position.set(0, Y + 0.47, 0.12); inner.add(beacon);
   const coneGeo = new THREE.ConeGeometry(1, 1, 40, 1, true); coneGeo.translate(0, -0.5, 0);
   const cone = new THREE.Mesh(coneGeo, new THREE.MeshBasicMaterial({ color: 0x58d6ff, transparent: true, opacity: 0.09, side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending }));
   root.add(cone);
@@ -177,13 +246,14 @@ export function towerModel(range: number) {
 
 export function controlRoom() {
   const g = new THREE.Group();
-  g.add(merged([box(34, 9, 20, 0, 4.5, 0, 0xe9e5da), box(36, 1, 22, 0, 9.4, 0, 0x2c5f8a), box(28, 3, 0.4, 0, 5.2, 10.1, 0x17324a), cyl(0.3, 0.45, 20, 14, 19, -6, 0xb4bac3, 6), box(4, 0.3, 0.3, 14, 26, -6, 0xd6452f), box(3, 0.3, 0.3, 14, 22, -6, 0xd6452f), cyl(3.4, 0.4, 1, -10, 11.2, 0, 0xf0f0ea, 18)]));
+  const parts = [box(34, 9, 20, 0, 4.5, 0, 0xe9e5da), box(35, 0.8, 21, 0, 0.4, 0, 0x6f6a62), box(36, 1, 22, 0, 9.4, 0, 0x2c5f8a), box(34.6, 0.5, 20.6, 0, 8.6, 0, 0xcfcabd),
+    cyl(0.3, 0.45, 20, 14, 19, -6, 0xb4bac3, 8), box(4, 0.3, 0.3, 14, 26, -6, 0xd6452f), box(3, 0.3, 0.3, 14, 22, -6, 0xd6452f), cyl(3.4, 0.4, 1, -10, 11.2, 0, 0xf0f0ea, 24),
+    box(4.4, 5.4, 0.4, -12.5, 2.9, 10.15, 0x3a4753), box(6, 0.4, 3, -12.5, 5.9, 11.2, 0x2c5f8a), box(8, 0.35, 2.4, -12.5, 0.3, 11.4, 0x9a968c)];
+  for (let i = 0; i < 7; i++) { const x = -6 + i * 3.5; parts.push(box(2.9, 3.4, 0.3, x, 4.9, 10.12, 0x17324a), box(3.15, 0.25, 0.5, x, 3.1, 10.2, 0xb9b4a8), box(0.14, 3.4, 0.34, x, 4.9, 10.2, 0x8fa4b8)); }
+  for (const side of [-1, 1]) for (let i = 0; i < 4; i++) parts.push(box(0.3, 3, 3, side * 17.1, 4.9, -6 + i * 4, 0x17324a));
+  for (const [x, z] of [[2, -4], [7, 3], [-2, 5]]) parts.push(box(2.6, 1.3, 2, x, 10.5, z, 0x9aa1a8));
+  g.add(merged(parts));
   return g;
-}
-export function droneDock() {
-  const g = new THREE.Group(), parts = [box(46, 0.6, 30, 0, 0.3, 0, 0x6d7278), box(10, 5, 8, -28, 2.5, 0, 0x34495c)];
-  for (let i = 0; i < 5; i++) parts.push(cyl(3.4, 3.4, 0.3, -16 + i * 8.2, 0.75, i % 2 ? 6 : -6, 0xe8e8e2, 20), cyl(2.4, 2.4, 0.32, -16 + i * 8.2, 0.8, i % 2 ? 6 : -6, 0x35546e, 20));
-  g.add(merged(parts, false)); return g;
 }
 export function weighbridge() {
   const g = new THREE.Group();
@@ -192,7 +262,13 @@ export function weighbridge() {
 }
 export function plantShed() {
   const g = new THREE.Group();
-  g.add(merged([box(46, 16, 30, 0, 8, 0, 0x8d98a3), box(48, 1.4, 32, 0, 16.6, 0, 0x5d6670), box(6, 26, 6, 18, 13, -16, 0x737d88), box(4, 3, 44, -6, 15, 30, 0x4c545d, -0.34), cyl(2.4, 2.4, 22, -22, 11, -18, 0xa8b1ba, 12)]));
+  const parts = [box(46, 16, 30, 0, 8, 0, 0x8d98a3), box(47, 1, 31, 0, 0.5, 0, 0x55504a), box(48, 1.4, 32, 0, 16.6, 0, 0x5d6670), box(6, 26, 6, 18, 13, -16, 0x737d88), box(4, 3, 44, -6, 15, 30, 0x4c545d, -0.34), cyl(2.4, 2.4, 22, -22, 11, -18, 0xa8b1ba, 20)];
+  // pressed steel sheeting, roller doors and high windows
+  for (let x = -21.5; x <= 21.5; x += 2.15) parts.push(box(0.35, 14.6, 0.35, x, 8.4, 15.1, 0x7b8691), box(0.35, 14.6, 0.35, x, 8.4, -15.1, 0x7b8691));
+  for (const x of [-13, 4]) { parts.push(box(8, 8, 0.5, x, 4.9, 15.3, 0x3f474f)); for (let y = 1.8; y < 8.6; y += 1.1) parts.push(box(8, 0.18, 0.6, x, y, 15.35, 0x5a636c)); }
+  for (let i = 0; i < 9; i++) parts.push(box(3, 1.8, 0.5, -18 + i * 4.5, 12.6, 15.35, 0x1d3347));
+  for (let y = 4; y < 22; y += 4.4) parts.push(cyl(2.55, 2.55, 0.35, -22, y, -18, 0x6d757d, 20));
+  g.add(merged(parts));
   return g;
 }
 export function oreMaterial() { return oreMat; }

@@ -74,8 +74,8 @@ export const ZONE_GATE_IDS = ['Z1', 'Z2', 'Z3'];
 
 export interface PileSpec { id: string; pos: Vec; radius: number; tonnes: number }
 export const PILES: PileSpec[] = [
-  { id: 'S1', pos: v(560, -150), radius: 52, tonnes: 6200 },
-  { id: 'S2', pos: v(785, 45), radius: 50, tonnes: 5000 },
+  { id: 'S1', pos: v(625, -171), radius: 52, tonnes: 6200 },
+  { id: 'S2', pos: v(799, 11), radius: 50, tonnes: 5000 },
   { id: 'S3', pos: v(705, -240), radius: 40, tonnes: 3400 },
 ];
 export const TOWERS = [
